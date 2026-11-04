@@ -3,12 +3,13 @@ package mindustry.maps.filters;
 
 import arc.*;
 import arc.func.*;
+import arc.input.*;
+import arc.scene.*;
 import arc.scene.event.*;
 import arc.scene.style.*;
 import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.util.*;
-import mindustry.*;
 import mindustry.content.*;
 import mindustry.gen.*;
 import mindustry.ui.*;
@@ -41,7 +42,7 @@ public abstract class FilterOption{
         boolean display = true;
 
         SliderOption(String name, Floatp getter, Floatc setter, float min, float max){
-            this(name, getter, setter, min, max, (max - min) / 200);
+            this(name, getter, setter, min, max, 0.00001f);
         }
 
         SliderOption(String name, Floatp getter, Floatc setter, float min, float max, float step){
@@ -60,16 +61,19 @@ public abstract class FilterOption{
 
         @Override
         public void build(Table table){
-            Label label;
+            Element base;
             if(!display){
-                label = new Label("@filter.option." + name);
+                Label l = new Label("@filter.option." + name);
+                l.setWrap(true);
+                l.setStyle(Styles.outlineLabel);
+                base = l;
             }else{
-                label = new Label(() -> Core.bundle.get("filter.option." + name) + ": " + Strings.autoFixed(getter.get(), 2));
+                Table t = new Table().marginLeft(11f).marginRight(11f);
+                base = t;
+                t.add("@filter.option." + name).growX().wrap().style(Styles.outlineLabel);
+                t.label(() -> Strings.autoFixed(getter.get(), 2)).style(Styles.outlineLabel).right().labelAlign(Align.right).padLeft(6);
             }
-            label.setWrap(true);
-            label.setAlignment(Align.center);
-            label.touchable = Touchable.disabled;
-            label.setStyle(Styles.outlineLabel);
+            base.touchable = Touchable.disabled;
 
             Slider slider = new Slider(min, max, step, false);
             slider.moved(setter);
@@ -80,7 +84,7 @@ public abstract class FilterOption{
                 slider.released(changed);
             }
 
-            table.stack(slider, label).colspan(2).pad(3).growX().row();
+            table.stack(slider, base).colspan(2).pad(3).growX().row();
         }
     }
 
@@ -99,25 +103,40 @@ public abstract class FilterOption{
 
         @Override
         public void build(Table table){
-            table.button(b -> b.image(supplier.get().uiIcon).update(i -> ((TextureRegionDrawable)i.getDrawable())
+            Button button = table.button(b -> b.image(supplier.get().uiIcon).update(i -> ((TextureRegionDrawable)i.getDrawable())
                 .setRegion(supplier.get() == Blocks.air ? Icon.none.getRegion() : supplier.get().uiIcon)).size(iconSmall), () -> {
-                BaseDialog dialog = new BaseDialog("");
-                dialog.setFillParent(false);
-                int i = 0;
-                for(Block block : Vars.content.blocks()){
-                    if(!filter.get(block)) continue;
+                BaseDialog dialog = new BaseDialog("@filter.option." + name);
+                dialog.cont.pane(t -> {
+                    int i = 0;
+                    for(Block block : content.blocks()){
+                        if(!filter.get(block)) continue;
 
-                    dialog.cont.image(block == Blocks.air ? Icon.none.getRegion() : block.uiIcon).size(iconMed).pad(3).get().clicked(() -> {
-                        consumer.get(block);
-                        dialog.hide();
-                        changed.run();
-                    });
-                    if(++i % 10 == 0) dialog.cont.row();
-                }
+                        t.image(block == Blocks.air ? Icon.none.getRegion() : block.uiIcon).size(iconMed).pad(3).tooltip(block == Blocks.air ? "@none" : block.localizedName).get().clicked(() -> {
+                            consumer.get(block);
+                            dialog.hide();
+                            changed.run();
+                        });
+                        if(++i % 10 == 0) t.row();
+                    }
+                    dialog.setFillParent(i > 100);
+                }).scrollX(false);
 
-                dialog.closeOnBack();
+
+                dialog.addCloseButton();
                 dialog.show();
-            }).pad(4).margin(12f);
+            }).pad(4).margin(12f).get();
+
+            button.clicked(KeyCode.mouseMiddle, () -> {
+                Core.app.setClipboardText(supplier.get().name);
+                ui.showInfoFade("@copied");
+            });
+
+            button.clicked(KeyCode.mouseRight, () -> {
+                if(content.block(Core.app.getClipboardText()) != null && filter.get(content.block(Core.app.getClipboardText()))){
+                    consumer.get(content.block(Core.app.getClipboardText()));
+                    changed.run();
+                }
+            });
 
             table.add("@filter.option." + name);
         }
@@ -138,6 +157,7 @@ public abstract class FilterOption{
         public void build(Table table){
             table.row();
             CheckBox check = table.check("@filter.option." + name, setter).growX().padBottom(5).padTop(5).center().get();
+            check.setChecked(getter.get());
             check.changed(changed);
         }
     }

@@ -6,6 +6,7 @@ import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.graphics.g2d.TextureAtlas.*;
 import arc.math.geom.*;
+import arc.mock.*;
 import arc.struct.*;
 import arc.util.*;
 import arc.util.Log.*;
@@ -15,6 +16,7 @@ import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.ctype.*;
 import mindustry.logic.*;
+import mindustry.type.*;
 import mindustry.world.blocks.*;
 
 import java.io.*;
@@ -27,9 +29,14 @@ public class ImagePacker{
         //makes PNG loading slightly faster
         ArcNativesLoader.load();
 
+        fixSubdirectory("blocks/environment/character-overlay");
+        fixSubdirectory("blocks/environment/rune-overlay");
+
+        Core.settings = new MockSettings();
         Log.logger = new NoopLogHandler();
         Vars.content = new ContentLoader();
         Vars.content.createBaseContent();
+        Vars.content.init();
         Log.logger = new DefaultLogHandler();
 
         Fi.get("../../../assets-raw/sprites_out").walk(path -> {
@@ -77,6 +84,11 @@ public class ImagePacker{
             }
 
             @Override
+            public PixmapRegion getPixmap(AtlasRegion region){
+                return new PixmapRegion(get(region.name));
+            }
+
+            @Override
             public boolean has(String s){
                 return cache.containsKey(s);
             }
@@ -85,6 +97,7 @@ public class ImagePacker{
         Draw.scl = 1f / Core.atlas.find("scale_marker").width;
 
         Time.mark();
+        Vars.content.load();
         Generators.run();
         Log.info("&ly[Generator]&lc Total time to generate: &lg@&lcms", Time.elapsed());
 
@@ -100,7 +113,7 @@ public class ImagePacker{
         map.each((key, val) -> content2id.put(val.split("\\|")[0], key));
 
         Seq<UnlockableContent> cont = Seq.withArrays(Vars.content.blocks(), Vars.content.items(), Vars.content.liquids(), Vars.content.units(), Vars.content.statusEffects());
-        cont.removeAll(u -> u instanceof ConstructBlock || u == Blocks.air);
+        cont.removeAll(u -> u instanceof ConstructBlock || u == Blocks.air || (u instanceof UnitType t && t.internal));
 
         int minid = 0xF8FF;
         for(String key : map.keys()){
@@ -131,7 +144,7 @@ public class ImagePacker{
 
         Seq<UnlockableContent> lookupCont = new Seq<>();
 
-        for(ContentType t : GlobalConstants.lookableContent){
+        for(ContentType t : GlobalVars.writableLookableContent){
             lookupCont.addAll(Vars.content.<UnlockableContent>getBy(t).select(UnlockableContent::logicVisible));
         }
 
@@ -145,7 +158,7 @@ public class ImagePacker{
 
         if(logicidfile.exists()){
             try(DataInputStream in = new DataInputStream(logicidfile.readByteStream())){
-                for(ContentType ctype : GlobalConstants.lookableContent){
+                for(ContentType ctype : GlobalVars.writableLookableContent){
                     short amount = in.readShort();
                     for(int i = 0; i < amount; i++){
                         String name = in.readUTF();
@@ -180,7 +193,7 @@ public class ImagePacker{
 
         //write the resulting IDs
         try(DataOutputStream out = new DataOutputStream(logicidfile.write(false, 2048))){
-            for(ContentType t : GlobalConstants.lookableContent){
+            for(ContentType t : GlobalVars.writableLookableContent){
                 Seq<UnlockableContent> all = idToContent[t.ordinal()].values().toArray().sort(u -> registered[t.ordinal()].get(u));
                 out.writeShort(all.size);
                 for(UnlockableContent u : all){
@@ -188,6 +201,15 @@ public class ImagePacker{
                 }
             }
         }
+    }
+
+    static void fixSubdirectory(String dir){
+        Fi folder = Fi.get("../../../assets-raw/sprites_out/" + dir);
+        Fi parent = folder.parent();
+        folder.walk(fi -> {
+            fi.moveTo(parent.child(fi.name()));
+        });
+        folder.delete();
     }
 
     static String texname(UnlockableContent c){
@@ -236,8 +258,16 @@ public class ImagePacker{
         base.draw(image, 0, 0, image.width, image.height, base.width/2 - wx/2, base.height/2 - wy/2, wx, wy, true, true);
     }
 
+    static void delete(String name){
+        ((GenRegion)Core.atlas.find(name)).path.delete();
+    }
+
     static void replace(String name, Pixmap image){
-        Fi.get(name + ".png").writePng(image);
+        replace(name, name, image);
+    }
+
+    static void replace(String path, String name, Pixmap image){
+        Fi.get(path + ".png").writePng(image);
         ((GenRegion)Core.atlas.find(name)).path.delete();
     }
 

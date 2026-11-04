@@ -1,1 +1,1 @@
-L'industrie au service de ce tower defense.
+Un jeu de construction d'usines, avec du tower defense et du RTS

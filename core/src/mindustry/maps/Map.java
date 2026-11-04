@@ -6,12 +6,14 @@ import arc.graphics.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.content.*;
 import mindustry.game.EventType.*;
 import mindustry.game.*;
 import mindustry.io.*;
 import mindustry.maps.filters.*;
 import mindustry.mod.Mods.*;
 import mindustry.type.*;
+import mindustry.world.meta.*;
 
 import static mindustry.Vars.*;
 
@@ -29,7 +31,7 @@ public class Map implements Comparable<Map>, Publishable{
     /** Map width/height, shorts. */
     public int width, height;
     /** Preview texture. */
-    public Texture texture;
+    public @Nullable Texture texture;
     /** Build that this map was created in. -1 = unknown or custom build. */
     public int build;
     /** All teams present on this map.*/
@@ -61,7 +63,7 @@ public class Map implements Comparable<Map>, Publishable{
         this(Vars.customMapDirectory.child(tags.get("name", "unknown")), 0, 0, tags, true);
     }
 
-    public int getHightScore(){
+    public int getHighScore(){
         return Core.settings.getInt("hiscore" + file.nameWithoutExtension() + tags.get("steamid", ""), 0);
     }
 
@@ -98,14 +100,18 @@ public class Map implements Comparable<Map>, Publishable{
 
     public Rules rules(Rules base){
         try{
-            //this replacement is a MASSIVE hack but it fixes some incorrect overwriting of team-specific rules.
-            //may need to be tweaked later
-            Rules result = JsonIO.read(Rules.class, base, tags.get("rules", "{}").replace("teams:{2:{infiniteAmmo:true}},", ""));
+            Rules result = JsonIO.read(base, tags.get("rules", "{}"));
+
+            //replace the default serpulo env with erekir
+            if(result.planet == Planets.serpulo && result.hasEnv(Env.scorching)){
+                result.planet = Planets.erekir;
+            }
+            if(result.planet == null) result.planet = Planets.serpulo;
             if(result.spawns.isEmpty()) result.spawns = Vars.waves.get();
             return result;
-        }catch(Exception e){
+        }catch(Throwable e){
             //error reading rules. ignore?
-            e.printStackTrace();
+            Log.err(e);
             return new Rules();
         }
     }
@@ -118,6 +124,10 @@ public class Map implements Comparable<Map>, Publishable{
         return maps.readFilters(tags.get("genfilters", ""));
     }
 
+    public String name(){
+        return tag("name");
+    }
+
     public String author(){
         return tag("author");
     }
@@ -126,16 +136,24 @@ public class Map implements Comparable<Map>, Publishable{
         return tag("description");
     }
 
-    public String name(){
-        return tag("name");
+    public String plainName() {
+        return Strings.stripColors(name());
+    }
+
+    public String plainAuthor(){
+        return Strings.stripColors(author());
+    }
+
+    public String plainDescription(){
+        return Strings.stripColors(description());
     }
 
     public String tag(String name){
-        return tags.containsKey(name) && !tags.get(name).trim().isEmpty() ? tags.get(name) : Core.bundle.get("unknown", "unknown");
+        return hasTag(name) ? tags.get(name) : Core.bundle.get("unknown", "unknown");
     }
 
     public boolean hasTag(String name){
-        return tags.containsKey(name);
+        return tags.containsKey(name) && !tags.get(name).trim().isEmpty();
     }
 
     @Override
@@ -146,21 +164,22 @@ public class Map implements Comparable<Map>, Publishable{
     @Override
     public void addSteamID(String id){
         tags.put("steamid", id);
-
         editor.tags.put("steamid", id);
+
         try{
             ui.editor.save();
         }catch(Exception e){
             Log.err(e);
         }
+
         Events.fire(new MapPublishEvent());
     }
 
     @Override
     public void removeSteamID(){
         tags.remove("steamid");
-
         editor.tags.remove("steamid");
+
         try{
             ui.editor.save();
         }catch(Exception e){
@@ -192,7 +211,8 @@ public class Map implements Comparable<Map>, Publishable{
 
     @Override
     public Fi createSteamPreview(String id){
-        return previewFile();
+        //I have no idea what the hell I was even thinking with this preview stuff
+        return Vars.mapPreviewDirectory.child((workshop && file.parent().exists() && file.parent().extEquals(".png") ? file.parent().name() : file.nameWithoutExtension()) + "_v2.png");
     }
 
     @Override
@@ -204,9 +224,9 @@ public class Map implements Comparable<Map>, Publishable{
     @Override
     public boolean prePublish(){
         tags.put("author", player.name);
-        editor.tags.put("author", tags.get("author"));
-        ui.editor.save();
+        editor.tags.put("author", player.name);
 
+        ui.editor.save();
         return true;
     }
 
@@ -219,15 +239,13 @@ public class Map implements Comparable<Map>, Publishable{
         int modes = Boolean.compare(Gamemode.pvp.valid(this), Gamemode.pvp.valid(map));
         if(modes != 0) return modes;
 
-        return name().compareTo(map.name());
+        return Strings.stripColors(name()).compareTo(Strings.stripColors(map.name()));
     }
 
     @Override
     public String toString(){
         return "Map{" +
         "file='" + file + '\'' +
-        ", custom=" + custom +
-        ", tags=" + tags +
         '}';
     }
 }

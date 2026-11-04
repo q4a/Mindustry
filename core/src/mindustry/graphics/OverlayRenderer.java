@@ -50,11 +50,19 @@ public class OverlayRenderer{
 
         Seq<Vec2> pos = new Seq<>();
         Seq<CoreBuild> teams = new Seq<>();
-        for(TeamData team : state.teams.active){
-            for(CoreBuild b : team.cores){
+        for(TeamData data : state.teams.active){
+            if(!data.team.rules().protectCores){
+                continue;
+            }
+
+            for(CoreBuild b : data.cores){
                 teams.add(b);
                 pos.add(new Vec2(b.x, b.y));
             }
+        }
+
+        if(pos.isEmpty()){
+            return;
         }
 
         //if this is laggy, it could be shoved in another thread.
@@ -67,10 +75,14 @@ public class OverlayRenderer{
     public void drawBottom(){
         InputHandler input = control.input;
 
+        if(renderer.showOtherBuildPlans){
+            input.drawOtherBuildPlans();
+        }
+
         if(player.dead()) return;
 
         if(player.isBuilder()){
-            player.unit().drawBuildPlans();
+            input.drawBuildPlans();
         }
 
         input.drawBottom();
@@ -78,7 +90,7 @@ public class OverlayRenderer{
 
     public void drawTop(){
 
-        if(!player.dead() && ui.hudfrag.shown){
+        if(!player.dead() && ui.hudfrag.shown()){
             if(Core.settings.getBool("playerindicators")){
                 for(Player player : Groups.player){
                     if(Vars.player != player && Vars.player.team() == player.team()){
@@ -95,7 +107,7 @@ public class OverlayRenderer{
                 }
             }
 
-            if(Core.settings.getBool("indicators")){
+            if(Core.settings.getBool("indicators") && !state.rules.fog){
                 Groups.unit.each(unit -> {
                     if(!unit.isLocal() && unit.team != player.team() && !rect.setSize(Core.camera.width * 0.9f, Core.camera.height * 0.9f)
                     .setCenter(Core.camera.position.x, Core.camera.position.y).contains(unit.x, unit.y)){
@@ -109,14 +121,11 @@ public class OverlayRenderer{
             }
         }
 
-        if(player.dead()) return; //dead players don't draw
-
         InputHandler input = control.input;
-
 
         Sized select = input.selectedUnit();
         if(select == null) select = input.selectedControlBuild();
-        if(!Core.input.keyDown(Binding.control)) select = null;
+        if(!Core.input.keyDown(Binding.control) || !state.rules.possessionAllowed) select = null;
 
         unitFade = Mathf.lerpDelta(unitFade, Mathf.num(select != null), 0.1f);
 
@@ -126,12 +135,10 @@ public class OverlayRenderer{
             Draw.mixcol(Pal.accent, 1f);
             Draw.alpha(unitFade);
             Building build = (select instanceof BlockUnitc b ? b.tile() : select instanceof Building b ? b : null);
+            TextureRegion region = build != null ? build.block.fullIcon : Core.atlas.white();
 
-            if(build != null){
-                //special selection for block "units"
-                Fill.square(build.x, build.y, build.block.size * tilesize/2f);
-            }else if(select instanceof Unit u){
-                Draw.rect(u.type.fullIcon, u.x, u.y, u.rotation - 90);
+            if(select instanceof BlockUnitc){
+                Draw.rect(region, select.getX(), select.getY());
             }
 
             for(int i = 0; i < 4; i++){
@@ -144,12 +151,15 @@ public class OverlayRenderer{
         }
 
         //draw config selected block
-        if(input.frag.config.isShown()){
-            Building tile = input.frag.config.getSelectedTile();
+        if(input.config.isShown()){
+            Building tile = input.config.getSelected();
             tile.drawConfigure();
         }
 
-        input.drawTop();
+        if(!player.dead()) input.drawTop();
+        input.drawUnitSelection();
+
+        if(player.dead()) return; //dead players don't draw
 
         buildFade = Mathf.lerpDelta(buildFade, input.isPlacing() || input.isUsingSchematic() ? 1f : 0f, 0.06f);
 
@@ -175,11 +185,13 @@ public class OverlayRenderer{
                 Draw.color();
             }else{
                 state.teams.eachEnemyCore(player.team(), core -> {
-                    if(Core.camera.bounds(Tmp.r1).overlaps(Tmp.r2.setCentered(core.x, core.y, state.rules.enemyCoreBuildRadius * 2f))){
+                    //it must be clear that there is a core here.
+                    float br = state.rules.buildRadius(core.team);
+                    if(/*core.wasVisible && */br > 0f && Core.camera.bounds(Tmp.r1).overlaps(Tmp.r2.setCentered(core.x, core.y, br * 2f))){
                         Draw.color(Color.darkGray);
-                        Lines.circle(core.x, core.y - 2, state.rules.enemyCoreBuildRadius);
+                        Lines.circle(core.x, core.y - 2,br);
                         Draw.color(Pal.accent, core.team.color, 0.5f + Mathf.absin(Time.time, 10f, 0.5f));
-                        Lines.circle(core.x, core.y, state.rules.enemyCoreBuildRadius);
+                        Lines.circle(core.x, core.y, br);
                     }
                 });
             }
@@ -210,7 +222,7 @@ public class OverlayRenderer{
                    build.drawDisabled();
                 }
 
-                if(Core.input.keyDown(Binding.rotateplaced) && build.block.rotate && build.block.quickRotate && build.interactable(player.team())){
+                if(Core.input.keyDown(Binding.rotatePlaced) && build.block.rotate && build.block.quickRotate && build.interactable(player.team())){
                     control.input.drawArrow(build.block, build.tileX(), build.tileY(), build.rotation, true);
                     Draw.color(Pal.accent, 0.3f + Mathf.absin(4f, 0.2f));
                     Fill.square(build.x, build.y, build.block.size * tilesize/2f);
@@ -221,7 +233,7 @@ public class OverlayRenderer{
 
         input.drawOverSelect();
 
-        if(ui.hudfrag.blockfrag.hover() instanceof Unit unit && unit.controller() instanceof LogicAI ai && ai.controller != null && ai.controller.isValid()){
+        if(ui.hudfrag.blockfrag.hover() instanceof Unit unit && unit.controller() instanceof LogicAI ai && ai.controller != null && ai.controller.isValid() && (state.isEditor() || !ai.controller.block.privileged)){
             var build = ai.controller;
             Drawf.square(build.x, build.y, build.block.size * tilesize/2f + 2f);
             if(!unit.within(build, unit.hitSize * 2f)){
@@ -238,15 +250,29 @@ public class OverlayRenderer{
             Lines.circle(v.x, v.y, 6 + Mathf.absin(Time.time, 5f, 1f));
             Draw.reset();
 
-            Building tile = world.buildWorld(v.x, v.y);
-            if(input.canDropItem() && tile != null && tile.interactable(player.team()) && tile.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit()) > 0 && player.within(tile, itemTransferRange)){
+            Building build = world.buildWorld(v.x, v.y);
+            if(input.canDropItem() && build != null && build.interactable(player.team()) && build.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit()) > 0 && player.within(build, itemTransferRange) &&
+                input.canDepositItem(build)){
+
+                boolean invalid = !build.allowDeposit();
+
                 Lines.stroke(3f, Pal.gray);
-                Lines.square(tile.x, tile.y, tile.block.size * tilesize / 2f + 3 + Mathf.absin(Time.time, 5f, 1f));
-                Lines.stroke(1f, Pal.place);
-                Lines.square(tile.x, tile.y, tile.block.size * tilesize / 2f + 2 + Mathf.absin(Time.time, 5f, 1f));
+                Lines.square(build.x, build.y, build.block.size * tilesize / 2f + 3 + Mathf.absin(Time.time, 5f, 1f));
+                Lines.stroke(1f, invalid ? Pal.remove : Pal.place);
+                Lines.square(build.x, build.y, build.block.size * tilesize / 2f + 2 + Mathf.absin(Time.time, 5f, 1f));
                 Draw.reset();
 
+                if(invalid){
+                    build.block.drawPlaceText(Core.bundle.get("bar.onlycoredeposit"), build.tileX(), build.tileY(), false);
+                }
             }
+        }
+    }
+
+    public void checkApplySelection(Unit u){
+        if(unitFade > 0.001f && lastSelect == u){
+            Color prev = Draw.getMixColor();
+            Draw.mixcol(prev.a > 0.001f ? prev.lerp(Pal.accent, unitFade) : Pal.accent, Math.max(unitFade, prev.a));
         }
     }
 

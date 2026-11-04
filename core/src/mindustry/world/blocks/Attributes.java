@@ -25,6 +25,7 @@ public class Attributes implements JsonSerializable{
 
     public void add(Attributes other){
         check();
+        other.check();
         for(int i = 0; i < arr.length; i++){
             arr[i] += other.arr[i];
         }
@@ -32,6 +33,7 @@ public class Attributes implements JsonSerializable{
 
     public void add(Attributes other, float scl){
         check();
+        other.check();
         for(int i = 0; i < arr.length; i++){
             arr[i] += other.arr[i] * scl;
         }
@@ -56,6 +58,26 @@ public class Attributes implements JsonSerializable{
     }
 
     private void check(){
-        if(arr.length != Attribute.all.length) arr = new float[Attribute.all.length];
+        if(arr.length != Attribute.all.length){
+            var last = arr;
+            arr = new float[Attribute.all.length];
+            System.arraycopy(last, 0, arr, 0, Math.min(last.length, arr.length));
+        }
+    }
+
+    @Override
+    public String toString(){
+        StringBuilder res = new StringBuilder();
+        res.append("Attributes{");
+        boolean any = false;
+        for(int i = 0; i < arr.length; i++){
+            if(arr[i] != 0){
+                res.append(Attribute.all[i]).append(": ").append(arr[i]).append(", ");
+                any = true;
+            }
+        }
+        if(any) res.setLength(res.length() - 2);
+        res.append("}");
+        return res.toString();
     }
 }

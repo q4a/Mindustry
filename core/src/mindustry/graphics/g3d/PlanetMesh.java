@@ -3,14 +3,13 @@ package mindustry.graphics.g3d;
 import arc.graphics.*;
 import arc.graphics.gl.*;
 import arc.math.geom.*;
-import arc.util.*;
 import mindustry.type.*;
 
 /** Defines a mesh that is rendered for a planet. Subclasses provide a mesh and a shader. */
-public abstract class PlanetMesh implements Disposable{
-    protected final Mesh mesh;
-    protected final Planet planet;
-    protected final Shader shader;
+public abstract class PlanetMesh implements GenericMesh{
+    protected Mesh mesh;
+    protected Planet planet;
+    protected Shader shader;
 
     public PlanetMesh(Planet planet, Mesh mesh, Shader shader){
         this.planet = planet;
@@ -18,11 +17,18 @@ public abstract class PlanetMesh implements Disposable{
         this.shader = shader;
     }
 
-    /** Should be overridden to set up any shader parameters such as planet position, normals, etc. */
-    public abstract void preRender();
+    public PlanetMesh(){}
 
-    public void render(Mat3D projection, Mat3D transform){
-        preRender();
+    /** Should be overridden to set up any shader parameters such as planet position, normals, etc. */
+    public void preRender(PlanetParams params){
+
+    }
+
+    @Override
+    public void render(PlanetParams params, Mat3D projection, Mat3D transform){
+        if(mesh.isDisposed()) return;
+
+        preRender(params);
         shader.bind();
         shader.setUniformMatrix4("u_proj", projection.val);
         shader.setUniformMatrix4("u_trans", transform.val);

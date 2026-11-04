@@ -3,11 +3,10 @@ buildscript{
         mavenLocal()
         mavenCentral()
         google()
-        maven{ url "https://oss.sonatype.org/content/repositories/snapshots/" }
     }
 
     dependencies{
-        classpath 'com.android.tools.build:gradle:7.1.0-alpha02'
+        classpath 'com.android.tools.build:gradle:8.2.2'
     }
 }
 
@@ -17,21 +16,21 @@ configurations{ natives }
 
 repositories{
     mavenCentral()
-    maven{ url "https://maven.google.com" }
-    jcenter() //remove later once google/JetBrains fixes the dependency
+    maven{ url = "https://maven.google.com" }
 }
 
 task deploy(type: Copy){
     dependsOn "assembleRelease"
 
-    from "build/outputs/apk/standard/release/android-standard-release.apk"
+    from "build/outputs/apk/release/android-release.apk"
     into "../deploy/"
-    rename("android-standard-release.apk", "${generateDeployName('android')}.apk")
+    rename("android-release.apk", "${generateDeployName('android')}.apk")
 }
 
 android{
-    buildToolsVersion '30.0.2'
-    compileSdkVersion 30
+    namespace = "io.anuke.mindustry"
+    buildToolsVersion = '36.0.0'
+    compileSdk = 36
     sourceSets{
         main{
             manifest.srcFile 'AndroidManifest.xml'
@@ -40,10 +39,12 @@ android{
             renderscript.srcDirs = ['src']
             res.srcDirs = ['res']
             assets.srcDirs = ['assets', 'src/main/assets', '../core/assets/']
-            jniLibs.srcDirs = ['libs']
-        }
-        gp{
-            java.srcDirs = ['srcgp']
+
+            if(localArc){
+                jniLibs.srcDirs += ['../../Arc/natives/natives-android/libs', '../../Arc/natives/natives-freetype-android/libs']
+            }else{
+                jniLibs.srcDirs = ['libs']
+            }
         }
 
         androidTest.setRoot('tests')
@@ -59,24 +60,26 @@ android{
         def versionNameResult = "$versionNumber-$versionType-${getBuildVersion().replace(" ", "-")}"
 
         applicationId "io.anuke.mindustry"
-        minSdkVersion 14
-        targetSdkVersion 30
-        
+        minSdkVersion 21
+        targetSdkVersion 36
+
         versionName versionNameResult
-        versionCode = (System.getenv("TRAVIS_BUILD_ID") != null ? System.getenv("TRAVIS_BUILD_ID").toInteger() : vcode)
+        versionCode = vcode
 
         if(project.hasProperty("release")){
             props['androidBuildCode'] = (vcode + 1).toString()
         }
         props.store(file('../core/assets/version.properties').newWriter(), null)
+
+        multiDexEnabled = true
     }
 
     compileOptions{
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
-    flavorDimensions "google"
+    flavorDimensions = ["google"]
 
     signingConfigs{
         release{
@@ -98,11 +101,12 @@ android{
 
     buildTypes{
         all{
+            //TODO without these lines (r8 enabled), Mindustry crashes with missing default interface method errors.
+            //WHY THE HELL ARE DEFAULT INTERFACES NOT BEING DESUGARED? WHY DID UPDATING AGP MAKE THIS HAPPEN?
+            //When I ENABLE shrinking, r8 goes and REMOVES ALL DEFAULT INTERFACE CLASSES, which breaks mods. Why?
+            //-keep class mindustry.** { *; } should *keep the classes* - WHY IS R8 REMOVING THEM?
             minifyEnabled = true
             shrinkResources = true
-            //this is the ONLY WAY I could find to force r8 to keep its filthy hands off of my default interfaces.
-            //may have undesirable side effects
-            debuggable = true
             proguardFiles("proguard-rules.pro")
         }
     }
@@ -110,20 +114,8 @@ android{
     if(project.hasProperty("RELEASE_STORE_FILE") || System.getenv("CI") == "true"){
         buildTypes{
             release{
-                signingConfig signingConfigs.release
+                signingConfig = signingConfigs.release
             }
-        }
-    }
-
-    // Specifies one flavor dimension.
-    flavorDimensions "version"
-    productFlavors{
-        standard{
-
-        }
-        gp{
-            applicationIdSuffix ".gp"
-            versionNameSuffix "-gp"
         }
     }
 }
@@ -134,23 +126,29 @@ dependencies{
     implementation arcModule("backends:backend-android")
     implementation 'com.jakewharton.android.repackaged:dalvik-dx:9.0.0_r3'
 
-    natives "com.github.Anuken.Arc:natives-android:${getArcHash()}"
-    natives "com.github.Anuken.Arc:natives-freetype-android:${getArcHash()}"
+    if(!localArc){
+        natives "com.github.Anuken.Arc:natives-android:$arcHash"
+        natives "com.github.Anuken.Arc:natives-freetype-android:$arcHash"
+    }
 
-    gpImplementation "com.google.android.gms:play-services-games:21.0.0"
-    gpImplementation "com.google.android.gms:play-services-auth:19.0.0"
+    def version, highestVersion
+    new File((String)findSdkDir(), "/platforms").eachFileMatch ~/android-\d+/, {
+        version = it.name.find(/\d+/).toInteger()
+        highestVersion = version > highestVersion ? version : highestVersion
+    }
 
-    //android dependencies magically disappear during compilation, thanks gradle!
-    def sdkFile = new File((String)findSdkDir(), "/platforms/android-29/android.jar")
+    def sdkFile = new File((String)findSdkDir(), "/platforms/android-${highestVersion}/android.jar")
     if(sdkFile.exists()) compileOnly files(sdkFile.absolutePath)
 }
 
 task copyAndroidNatives(){
-    configurations.natives.files.each{ jar ->
-        copy{
-            from zipTree(jar)
-            into file("libs/")
-            include "**"
+    if(!localArc){
+        configurations.natives.files.each{ jar ->
+            copy{
+                from zipTree(jar)
+                into file("libs/")
+                include "**"
+            }
         }
     }
 }

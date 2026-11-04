@@ -4,21 +4,27 @@ import arc.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
+import arc.math.geom.*;
 import arc.scene.ui.layout.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.pooling.*;
+import mindustry.*;
+import mindustry.ai.*;
+import mindustry.ai.types.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
-import mindustry.core.*;
 import mindustry.entities.units.*;
 import mindustry.game.EventType.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.input.InputHandler.*;
 import mindustry.net.Administration.*;
 import mindustry.net.*;
 import mindustry.net.Packets.*;
 import mindustry.ui.*;
+import mindustry.world.*;
 import mindustry.world.blocks.storage.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
 
@@ -28,27 +34,78 @@ import static mindustry.Vars.*;
 @Component(base = true)
 abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Drawc{
     static final float deathDelay = 60f;
+    static final float pingDuration = 20f * 60f;
 
     @Import float x, y;
 
-    @ReadOnly Unit unit = Nulls.unit;
+    @ReadOnly @Nullable Unit unit;
     transient @Nullable NetConnection con;
     @ReadOnly Team team = Team.sharded;
     @SyncLocal boolean typing, shooting, boosting;
+    @SyncLocal @Nullable Block selectedBlock;
+    @SyncLocal int selectedRotation;
     @SyncLocal float mouseX, mouseY;
+    /** command the unit had before it was controlled. */
+    @Nullable @NoSync UnitCommand lastCommand;
     boolean admin;
     String name = "frog";
     Color color = new Color();
-    //locale should not be synced.
+
     transient String locale = "en";
     transient float deathTimer;
     transient String lastText = "";
     transient float textFadeTime;
-    transient private Unit lastReadUnit = Nulls.unit;
+    transient Ratekeeper itemDepositRate = new Ratekeeper();
+    transient float pingX, pingY, pingTime;
+    transient @Nullable String pingText;
+
+    transient private @Nullable Unit lastReadUnit;
+    transient private int wrongReadUnits;
     transient @Nullable Unit justSwitchFrom, justSwitchTo;
 
+    transient int lastPreviewPlanGroup = -1, lastPreviewPlanGroupServer = -1;
+    transient long lastPreviewPlanTimestamp;
+    transient boolean receivingNewPlanGroup;
+    transient Seq<BuildPlan> previewPlansCurrent = new Seq<>(BuildPlan.class);
+    transient Seq<BuildPlan> previewPlansAssembling = new Seq<>(BuildPlan.class);
+    transient @Nullable QuadTree<BuildPlan> previewPlanTree;
+    transient @Nullable QueryEachable planEachable;
+    transient boolean previewPlansDirty;
+
+    public Seq<BuildPlan> getPreviewPlans(){
+        long timeToCommit = 100; //ms needed after first plan is received to "commit" the plans.
+        if(Time.timeSinceMillis(lastPreviewPlanTimestamp) >= timeToCommit && receivingNewPlanGroup){
+            receivingNewPlanGroup = false;
+            previewPlansDirty = true;
+            previewPlansCurrent.set(previewPlansAssembling);
+            previewPlansAssembling.clear();
+        }
+
+        return previewPlansCurrent;
+    }
+
+    public void handlePreviewPlans(int groupId, Seq<BuildPlan> plans){
+        if(groupId > lastPreviewPlanGroup){ //new group received, prepare to add plans for this group
+            previewPlansAssembling.clear();
+            lastPreviewPlanGroup = groupId;
+            receivingNewPlanGroup = true;
+            lastPreviewPlanTimestamp = Time.millis();
+        }else if(groupId < lastPreviewPlanGroup){ //packet is outdated, likely sent out of order
+            return;
+        }else if(!receivingNewPlanGroup){ //the window has closed, no more plans will be received
+            return;
+        }
+
+        if(plans == null) return;
+
+        int added = Math.min(plans.size, maxPlayerPreviewPlans - previewPlansAssembling.size);
+        if(added > 0){
+            previewPlansAssembling.addAll(plans, 0, added);
+        }
+    }
+
     public boolean isBuilder(){
-        return unit.canBuild();
+        return unit != null && unit.canBuild();
     }
 
     public @Nullable CoreBuild closestCore(){
@@ -59,21 +116,33 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         return team.core();
     }
 
-    /** @return largest/closest core, with largest cores getting priority */
+    /** @return largest/closest core, with the largest cores getting priority */
     @Nullable
     public CoreBuild bestCore(){
-        return team.cores().min(Structs.comps(Structs.comparingInt(c -> -c.block.size), Structs.comparingFloat(c -> c.dst(x, y))));
+        var cores = team.cores();
+        //if someone screws up the map and adds an invalid core, prioritize the core that's supported
+        //if there's only one core, there are no other options
+        return cores.min(b -> cores.size == 1 || ((CoreBlock)b.block).unitType.supportsEnv(state.rules.env), Structs.comps(Structs.comparingInt(c -> -c.block.size), Structs.comparingFloat(c -> c.dst2(x, y))));
     }
 
     public TextureRegion icon(){
         //display default icon for dead players
-        if(dead()) return core() == null ? UnitTypes.alpha.fullIcon : ((CoreBlock)core().block).unitType.fullIcon;
+        if(dead()){
+            if(core() == null){
+                return UnitTypes.alpha.uiIcon;
+            }
+            var bestCore = (CoreBuild)bestCore();
+            if(bestCore == null){
+                return UnitTypes.alpha.uiIcon;
+            }
+            return ((CoreBlock)bestCore.block).unitType.uiIcon;
+        }
 
         return unit.icon();
     }
 
     public boolean displayAmmo(){
-        return unit instanceof BlockUnitc || state.rules.unitAmmo;
+        return unit instanceof BlockUnitc;
     }
 
     public void reset(){
@@ -81,9 +150,18 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         admin = typing = false;
         textFadeTime = 0f;
         x = y = 0f;
+        lastPreviewPlanTimestamp = 0;
+        lastPreviewPlanGroup = -1;
+        lastPreviewPlanGroupServer = -1;
+        previewPlanTree = null;
+        planEachable = null;
+        previewPlansCurrent.clear();
+        previewPlansAssembling.clear();
+        receivingNewPlanGroup = false;
+        previewPlansDirty = false;
         if(!dead()){
-            unit.controller(unit.type.createController());
-            unit = Nulls.unit;
+            unit.resetController();
+            unit = null;
         }
     }
 
@@ -92,9 +170,14 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         return isAdded();
     }
 
+    @Override
+    public boolean isLogicControllable(){
+        return false;
+    }
+
     @Replace
     public float clipSize(){
-        return unit.isNull() ? 20 : unit.type.hitSize * 2f;
+        return Float.MAX_VALUE;
     }
 
     @Override
@@ -104,9 +187,15 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         //reason: we know the server is lying here, essentially skip the unit snapshot because we know the client's information is more recent
         if(isLocal() && unit == justSwitchFrom && justSwitchFrom != null && justSwitchTo != null){
             unit = justSwitchTo;
+            //if several snapshots have passed and this unit is still incorrect, something's wrong
+            if(++wrongReadUnits >= 2){
+                justSwitchFrom = null;
+                wrongReadUnits = 0;
+            }
         }else{
             justSwitchFrom = null;
             justSwitchTo = null;
+            wrongReadUnits = 0;
         }
 
         //simulate a unit change after sync
@@ -114,21 +203,18 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         unit = lastReadUnit;
         unit(set);
         lastReadUnit = unit;
-
-        unit.aim(mouseX, mouseY);
-        //this is only necessary when the thing being controlled isn't synced
-        unit.controlWeapons(shooting, shooting);
-        //save previous formation to prevent reset
-        var formation = unit.formation;
-        //extra precaution, necessary for non-synced things
-        unit.controller(this);
-        //keep previous formation
-        unit.formation = formation;
+        if(unit != null){
+            unit.aim(mouseX, mouseY);
+            //this is only necessary when the thing being controlled isn't synced
+            unit.controlWeapons(shooting, shooting);
+            //extra precaution, necessary for non-synced things
+            unit.controller(this);
+        }
     }
 
     @Override
     public void update(){
-        if(!unit.isValid()){
+        if(unit != null && !unit.isValid()){
             clearUnit();
         }
 
@@ -141,7 +227,8 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
             //update some basic state to sync things
             if(unit.type.canBoost){
-                unit.elevation = Mathf.approachDelta(unit.elevation, unit.onSolid() || boosting || (unit.isFlying() && !unit.canLand()) ? 1f : 0f, unit.type.riseSpeed);
+                boolean shouldBoost = unit.onSolid() || boosting || (unit.isFlying() && !unit.canLand());
+                unit.elevation = Mathf.approachDelta(unit.elevation, shouldBoost ? 1f : 0f, shouldBoost ? unit.type.riseSpeed : unit.type.descentSpeed);
             }
         }else if((core = bestCore()) != null){
             //have a small delay before death to prevent the camera from jumping around too quickly
@@ -168,44 +255,57 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
     @Override
     public void remove(){
         //clear unit upon removal
-        if(!unit.isNull()){
+        if(unit != null){
             clearUnit();
         }
+
+        lastReadUnit = null;
+        justSwitchTo = justSwitchFrom = null;
     }
 
     public void team(Team team){
         this.team = team;
-        unit.team(team);
+        if(unit != null){
+            unit.team(team);
+        }
     }
 
     public void clearUnit(){
-        unit(Nulls.unit);
+        unit(null);
     }
 
-    public Unit unit(){
+    public @Nullable Unit unit(){
         return unit;
     }
 
-    public void unit(Unit unit){
+    public void unit(@Nullable Unit unit){
         //refuse to switch when the unit was just transitioned from
         if(isLocal() && unit == justSwitchFrom && justSwitchFrom != null && justSwitchTo != null){
             return;
         }
 
-        if(unit == null) throw new IllegalArgumentException("Unit cannot be null. Use clearUnit() instead.");
         if(this.unit == unit) return;
 
-        if(this.unit != Nulls.unit){
+        //save last command this unit had
+        if(unit != null && unit.controller() instanceof CommandAI ai){
+            lastCommand = ai.command;
+        }
+
+        if(this.unit != null){
             //un-control the old unit
-            this.unit.controller(this.unit.type.createController());
+            this.unit.resetController();
+            //restore last command issued before it was controlled
+            if(lastCommand != null && this.unit.controller() instanceof CommandAI ai){
+                ai.command(lastCommand);
+            }
         }
         this.unit = unit;
-        if(unit != Nulls.unit){
+        if(unit != null){
             unit.team(team);
             unit.controller(this);
 
             //this player just became remote, snap the interpolation so it doesn't go wild
-            if(unit.isRemote()){
+            if(unit.isRemote() && !net.client()){
                 unit.snapInterpolation();
             }
 
@@ -219,7 +319,7 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
     }
 
     boolean dead(){
-        return unit.isNull() || !unit.isValid();
+        return unit == null || !unit.isValid();
     }
 
     String ip(){
@@ -252,10 +352,57 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
     @Override
     public void draw(){
+        drawPing();
+        drawName();
+    }
+
+    public boolean isPinging(){
+        return pingTime > 0f;
+    }
+
+    void drawPing(){
+        if(pingTime <= 0f || !renderer.showPings || name == null || (!state.rules.showOtherTeamPings && team != Vars.player.team())) return;
+
+        float alpha = Math.min(Interp.pow5Out.apply(Mathf.clamp(Mathf.map(pingTime, 1f / 20f, 0f, 1f, 0f))), Interp.pow5Out.apply(Mathf.map(pingTime, 1f, 0.98f, 0f, 1f)));
+
+        Tmp.c1.set(color).a(alpha);
+
+        pingTime -= Time.delta / pingDuration;
+
+        float s = Scl.scl(4) / renderer.getDisplayScale();
+
+        Draw.z(Layer.playerName);
+        float z = Drawf.text();
+        float hover = Mathf.absin(5f, 1f);
+        float scaling = 1f + Mathf.clamp(Interp.pow5In.apply(Mathf.map(pingTime, 1f, 0.96f, 1f, 0f))) * 3f;
+
+        Drawf.square(pingX, pingY, 2f * scaling * s, 45f, Tmp.c1, Tmp.c3.set(Color.darkGray).mul(color).a(Tmp.c1.a), s);
+        Drawf.fillPoly(pingX, pingY + 9f * s + hover * s, 3, 3f * s, -90f, Tmp.c1, Tmp.c3, s);
+
+        if(pingText != null){
+            Drawf.text(name, pingX, pingY + (20f + hover)*s, Tmp.c1, 0.7f * s);
+            Drawf.text(pingText, pingX, pingY + (16f + hover)*s, Tmp.c2.set(1f, 1f, 1f, Tmp.c1.a), s);
+        }else{
+            Drawf.text(name, pingX, pingY + (16f + hover)*s, Tmp.c1, s);
+        }
+
+        Draw.reset();
+        Draw.z(z);
+    }
+
+    void drawName(){
+        //check clipping for name
+        if(unit == null || name == null) return;
+
+        float clip = unit.type.hitSize * 2f;
+        if(!Core.camera.bounds(Tmp.r1).overlaps(x - clip/2f, y - clip/2f, clip, clip)) return;
+
+        if(name == null || unit.inFogTo(Vars.player.team())) return;
+
         Draw.z(Layer.playerName);
         float z = Drawf.text();
 
-        Font font = Fonts.def;
+        Font font = Fonts.outline;
         GlyphLayout layout = Pools.obtain(GlyphLayout.class, GlyphLayout::new);
         final float nameHeight = 11;
         final float textHeight = 15;
@@ -303,28 +450,39 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         Draw.z(z);
     }
 
+    /** @return name with a markup color prefix */
+    String coloredName(){
+        return  "[#" + color.toString().toUpperCase() + "]" + name;
+    }
+
+    String plainName(){
+        return Strings.stripColors(name);
+    }
+
     void sendMessage(String text){
-        if(isLocal()){
-            if(ui != null){
-                ui.chatfrag.addMessage(text, null);
-            }
-        }else{
-            Call.sendMessage(con, text, null, null);
-        }
+        sendMessage(text, null, null);
     }
 
     void sendMessage(String text, Player from){
-        sendMessage(text, from, NetClient.colorizeName(from.id(), from.name));
+        sendMessage(text, from, null);
     }
 
-    void sendMessage(String text, Player from, String fromName){
+    void sendMessage(String text, Player from, String unformatted){
         if(isLocal()){
             if(ui != null){
-                ui.chatfrag.addMessage(text, fromName);
+                ui.chatfrag.addMessage(text);
             }
         }else{
-            Call.sendMessage(con, text, fromName, from);
+            Call.sendMessage(con, text, unformatted, from);
         }
+    }
+
+    void sendUnformatted(String unformatted){
+        sendUnformatted(null, unformatted);
+    }
+
+    void sendUnformatted(Player from, String unformatted){
+        sendMessage(netServer.chatFormatter.format(from, unformatted), from, unformatted);
     }
 
     PlayerInfo getInfo(){

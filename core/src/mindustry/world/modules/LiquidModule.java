@@ -1,6 +1,7 @@
 package mindustry.world.modules;
 
 import arc.math.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
 import mindustry.type.*;
@@ -10,56 +11,78 @@ import java.util.*;
 import static mindustry.Vars.*;
 
 public class LiquidModule extends BlockModule{
-    private static final int windowSize = 3, updateInterval = 60;
+
+    /** Total number of samples of flow rate that are taken. */
+    public static int flowWindowSize = 6;
+    /** Interval between which samples are added to the window, in ticks. */
+    public static float flowPollInterval = 10f;
+    /** Visual refresh rate of the value, in ticks. Doesn't affect values, just reduces high-frequency flickering. */
+    public static float flowVisualRefreshInterval = 15f;
+
     private static final Interval flowTimer = new Interval(2);
-    private static final float pollScl = 20f;
+    private static @Nullable WindowedMean[] cacheFlow;
+    private static @Nullable float[] cacheSums;
+    private static @Nullable float[] displayFlow;
+    private static final Bits cacheBits = new Bits();
 
     private float[] liquids = new float[content.liquids().size];
-    private float total;
     private Liquid current = content.liquid(0);
-    private float smoothLiquid;
 
-    private boolean hadFlow;
-    private @Nullable WindowedMean flow;
-    private float lastAdded, currentFlowRate;
+    private @Nullable WindowedMean[] flow;
 
-    public void update(boolean showFlow){
-        smoothLiquid = Mathf.lerpDelta(smoothLiquid, currentAmount(), 0.1f);
-        if(showFlow){
-            if(flowTimer.get(1, pollScl)){
+    public void updateFlow(){
+        if(flowTimer.get(1, flowPollInterval)){
+            int len = content.liquids().size;
+            if(liquids.length != len) liquids = Arrays.copyOf(liquids, len);
 
-                if(flow == null) flow = new WindowedMean(windowSize);
-                if(lastAdded > 0.0001f) hadFlow = true;
+            if(flow == null || flow.length != len || cacheSums == null || cacheFlow == null){
+                if(cacheFlow == null || cacheFlow.length != liquids.length){
+                    cacheFlow = new WindowedMean[liquids.length];
+                    for(int i = 0; i < liquids.length; i++){
+                        cacheFlow[i] = new WindowedMean(flowWindowSize);
+                    }
+                    cacheSums = new float[liquids.length];
+                    displayFlow = new float[liquids.length];
+                }else{
+                    for(int i = 0; i < liquids.length; i++){
+                        cacheFlow[i].reset();
+                    }
+                    Arrays.fill(cacheSums, 0);
+                    cacheBits.clear();
+                }
 
-                flow.add(lastAdded);
-                lastAdded = 0;
-                if(currentFlowRate < 0 || flowTimer.get(updateInterval)){
-                    currentFlowRate = flow.hasEnoughData() ? flow.mean() / pollScl : -1f;
+                Arrays.fill(displayFlow, -1);
+
+                flow = cacheFlow;
+            }
+
+            boolean updateFlow = flowTimer.get(flowVisualRefreshInterval);
+
+            for(int i = 0; i < liquids.length; i++){
+                flow[i].add(cacheSums[i]);
+                if(cacheSums[i] > 0){
+                    cacheBits.set(i);
+                }
+                cacheSums[i] = 0;
+
+                if(updateFlow){
+                    displayFlow[i] = flow[i].hasEnoughData() ? flow[i].mean() / flowPollInterval : -1;
                 }
             }
-        }else{
-            currentFlowRate = -1f;
-            flow = null;
-            hadFlow = false;
         }
     }
 
+    public void stopFlow(){
+        flow = null;
+    }
+
     /** @return current liquid's flow rate in u/s; any value < 0 means 'not ready'. */
-    public float getFlowRate(){
-        return currentFlowRate * 60;
+    public float getFlowRate(Liquid liquid){
+        return flow == null ? -1f : displayFlow != null ? displayFlow[liquid.id] * 60 : -1f;
     }
 
-    public boolean hadFlow(){
-        return hadFlow;
-    }
-
-    public float smoothAmount(){
-        return smoothLiquid;
-    }
-
-    /** @return total amount of liquids. */
-    public float total(){
-        return total;
+    public boolean hasFlowLiquid(Liquid liquid){
+        return flow != null && cacheBits.get(liquid.id);
     }
 
     /** Last received or loaded liquid. Only valid for liquid modules with 1 type of liquid. */
@@ -70,8 +93,14 @@ public class LiquidModule extends BlockModule{
     public void reset(Liquid liquid, float amount){
         Arrays.fill(liquids, 0f);
         liquids[liquid.id] = amount;
-        total = amount;
         current = liquid;
+    }
+
+    public void set(Liquid liquid, float amount){
+        if(amount >= liquids[current.id]){
+            current = liquid;
+        }
+        liquids[liquid.id] = amount;
     }
 
     public float currentAmount(){
@@ -83,22 +112,27 @@ public class LiquidModule extends BlockModule{
     }
 
     public void clear(){
-        total = 0;
         Arrays.fill(liquids, 0);
     }
 
     public void add(Liquid liquid, float amount){
         liquids[liquid.id] += amount;
-        total += amount;
         current = liquid;
 
         if(flow != null){
-            lastAdded += Math.max(amount, 0);
+            cacheSums[liquid.id] += Math.max(amount, 0);
+        }
+    }
+
+    public void handleFlow(Liquid liquid, float amount){
+        if(flow != null){
+            cacheSums[liquid.id] += Math.max(amount, 0);
         }
     }
 
     public void remove(Liquid liquid, float amount){
-        add(liquid, -amount);
+        //cap to prevent negative removal
+        add(liquid, Math.max(-amount, -liquids[liquid.id]));
     }
 
     public void each(LiquidConsumer cons){
@@ -117,6 +151,14 @@ public class LiquidModule extends BlockModule{
             }
         }
         return sum;
+    }
+
+    public void checkArrayCapacity(int size){
+        if(liquids.length != size) liquids = Arrays.copyOf(liquids, size);
+        cacheFlow = null;
+        cacheSums = null;
+        displayFlow = null;
+        flow = null;
     }
 
     @Override
@@ -139,17 +181,18 @@ public class LiquidModule extends BlockModule{
     @Override
     public void read(Reads read, boolean legacy){
         Arrays.fill(liquids, 0);
-        total = 0f;
         int count = legacy ? read.ub() : read.s();
 
         for(int j = 0; j < count; j++){
-            int liquidid = legacy ? read.ub() : read.s();
+            Liquid liq = content.liquid(legacy ? read.ub() : read.s());
             float amount = read.f();
-            liquids[liquidid] = amount;
-            if(amount > 0){
-                current = content.liquid(liquidid);
+            if(liq != null){
+                int liquidid = liq.id;
+                liquids[liquidid] = amount;
+                if(amount > liquids[current.id]){
+                    current = liq;
+                }
             }
-            this.total += amount;
         }
     }
 

@@ -15,19 +15,26 @@ import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.type.*;
 import mindustry.world.*;
+import mindustry.world.blocks.storage.CoreBlock.*;
 
 import static mindustry.Vars.*;
 
 public class WaveSpawner{
-    private static final float margin = 40f, coreMargin = tilesize * 2f, maxSteps = 30;
+    private static final float margin = 0f, coreMargin = tilesize * 2f, maxSteps = 30;
 
-    private Seq<Tile> spawns = new Seq<>();
+    private int tmpCount;
+    private Seq<Tile> spawns = new Seq<>(false);
     private boolean spawning = false;
     private boolean any = false;
     private Tile firstSpawn = null;
 
     public WaveSpawner(){
         Events.on(WorldLoadEvent.class, e -> reset());
+
+        Events.on(TileOverlayChangeEvent.class, e -> {
+            if(e.previous == Blocks.spawn) spawns.remove(e.tile);
+            if(e.overlay == Blocks.spawn) spawns.add(e.tile);
+        });
     }
 
     @Nullable
@@ -55,7 +62,7 @@ public class WaveSpawner{
     public void spawnEnemies(){
         spawning = true;
 
-        eachGroundSpawn((spawnX, spawnY, doShockwave) -> {
+        eachGroundSpawn(-1, (spawnX, spawnY, doShockwave) -> {
             if(doShockwave){
                 doShockwave(spawnX, spawnY);
             }
@@ -65,28 +72,34 @@ public class WaveSpawner{
             if(group.type == null) continue;
 
             int spawned = group.getSpawned(state.wave - 1);
+            if(spawned == 0) continue;
+
+            if(state.isCampaign()){
+                //when spawning a boss, round down, so 1.5x (hard) * 1 boss does not result in 2 bosses
+                spawned = Math.max(1, group.effect == StatusEffects.boss ?
+                          (int)(spawned * state.getPlanet().campaignRules.difficulty.enemySpawnMultiplier) :
+                    Mathf.round(spawned * state.getPlanet().campaignRules.difficulty.enemySpawnMultiplier));
+            }
+
+            int spawnedf = spawned;
 
             if(group.type.flying){
                 float spread = margin / 1.5f;
 
-                eachFlyerSpawn((spawnX, spawnY) -> {
-                    for(int i = 0; i < spawned; i++){
-                        Unit unit = group.createUnit(state.rules.waveTeam, state.wave - 1);
-                        unit.set(spawnX + Mathf.range(spread), spawnY + Mathf.range(spread));
-                        spawnEffect(unit);
+                eachFlyerSpawn(group.spawn, (spawnX, spawnY) -> {
+                    for(int i = 0; i < spawnedf; i++){
+                        spawnUnit(group, spawnX + Mathf.range(spread), spawnY + Mathf.range(spread));
                     }
                 });
             }else{
                 float spread = tilesize * 2;
 
-                eachGroundSpawn((spawnX, spawnY, doShockwave) -> {
+                eachGroundSpawn(group.spawn, (spawnX, spawnY, doShockwave) -> {
 
-                    for(int i = 0; i < spawned; i++){
+                    for(int i = 0; i < spawnedf; i++){
                         Tmp.v1.rnd(spread);
 
-                        Unit unit = group.createUnit(state.rules.waveTeam, state.wave - 1);
-                        unit.set(spawnX + Tmp.v1.x, spawnY + Tmp.v1.y);
-                        spawnEffect(unit);
+                        spawnUnit(group, spawnX + Tmp.v1.x, spawnY + Tmp.v1.y);
                     }
                 });
             }
@@ -95,78 +108,113 @@ public class WaveSpawner{
         Time.run(121f, () -> spawning = false);
     }
 
+    public void spawnUnit(SpawnGroup group, float x, float y){
+        group.createUnit(group.team == null ? state.rules.waveTeam : group.team, x, y,
+            Angles.angle(x, y, world.width()/2f * tilesize, world.height()/2f * tilesize), state.wave - 1, this::spawnEffect);
+    }
+
     public void doShockwave(float x, float y){
         Fx.spawnShockwave.at(x, y, state.rules.dropZoneRadius);
         Damage.damage(state.rules.waveTeam, x, y, state.rules.dropZoneRadius, 99999999f, true);
     }
 
     public void eachGroundSpawn(Intc2 cons){
-        eachGroundSpawn((x, y, shock) -> cons.get(World.toTile(x), World.toTile(y)));
+        eachGroundSpawn(-1, (x, y, shock) -> cons.get(World.toTile(x), World.toTile(y)));
     }
 
-    private void eachGroundSpawn(SpawnConsumer cons){
+    private void eachGroundSpawn(int filterPos, SpawnConsumer cons){
         if(state.hasSpawns()){
             for(Tile spawn : spawns){
+                if(filterPos != -1 && filterPos != spawn.pos()) continue;
+
                 cons.accept(spawn.worldx(), spawn.worldy(), true);
             }
         }
 
-        if(state.rules.attackMode && state.teams.isActive(state.rules.waveTeam) && !state.teams.playerCores().isEmpty()){
+        if(state.rules.wavesSpawnAtCores && state.rules.attackMode && state.teams.isActive(state.rules.waveTeam) && !state.teams.playerCores().isEmpty()){
             Building firstCore = state.teams.playerCores().first();
-            for(Building core : state.rules.waveTeam.cores()){
-                Tmp.v1.set(firstCore).sub(core).limit(coreMargin + core.block.size * tilesize /2f * Mathf.sqrt2);
+            for(CoreBuild core : state.rules.waveTeam.cores()){
+                if(filterPos != -1 && filterPos != core.pos()) continue;
 
-                boolean valid = false;
-                int steps = 0;
+                if(core.commandPos != null){
+                    cons.accept(core.commandPos.x, core.commandPos.y, false);
+                }else{
+                    boolean valid = false;
 
-                //keep moving forward until the max step amount is reached
-                while(steps++ < maxSteps){
-                    int tx = World.toTile(core.x + Tmp.v1.x), ty = World.toTile(core.y + Tmp.v1.y);
-                    any = false;
-                    Geometry.circle(tx, ty, world.width(), world.height(), 3, (x, y) -> {
-                        if(world.solid(x, y)){
-                            any = true;
+                    Tmp.v1.set(firstCore).sub(core).limit(coreMargin + core.block.size * tilesize /2f * Mathf.sqrt2);
+
+                    int steps = 0;
+
+                    //keep moving forward until the max step amount is reached
+                    while(steps++ < maxSteps){
+                        int tx = World.toTile(core.x + Tmp.v1.x), ty = World.toTile(core.y + Tmp.v1.y);
+                        any = false;
+                        Geometry.circle(tx, ty, world.width(), world.height(), 3, (x, y) -> {
+                            if(world.solid(x, y)){
+                                any = true;
+                            }
+                        });
+
+                        //nothing is in the way, spawn it
+                        if(!any){
+                            valid = true;
+                            break;
+                        }else{
+                            //make the vector longer
+                            Tmp.v1.setLength(Tmp.v1.len() + tilesize*1.1f);
                         }
-                    });
-
-                    //nothing is in the way, spawn it
-                    if(!any){
-                        valid = true;
-                        break;
-                    }else{
-                        //make the vector longer
-                        Tmp.v1.setLength(Tmp.v1.len() + tilesize*1.1f);
                     }
-                }
 
-                if(valid){
-                    cons.accept(core.x + Tmp.v1.x, core.y + Tmp.v1.y, false);
+                    if(valid){
+                        cons.accept(core.x + Tmp.v1.x, core.y + Tmp.v1.y, false);
+                    }
                 }
             }
         }
     }
 
-    private void eachFlyerSpawn(Floatc2 cons){
+    private void eachFlyerSpawn(int filterPos, Floatc2 cons){
+
         for(Tile tile : spawns){
-            float angle = Angles.angle(world.width() / 2f, world.height() / 2f, tile.x, tile.y);
-            float trns = Math.max(world.width(), world.height()) * Mathf.sqrt2 * tilesize;
-            float spawnX = Mathf.clamp(world.width() * tilesize / 2f + Angles.trnsx(angle, trns), -margin, world.width() * tilesize + margin);
-            float spawnY = Mathf.clamp(world.height() * tilesize / 2f + Angles.trnsy(angle, trns), -margin, world.height() * tilesize + margin);
-            cons.get(spawnX, spawnY);
+            if(filterPos != -1 && filterPos != tile.pos()) continue;
+
+            if(!state.rules.airUseSpawns){
+                float angle = Angles.angle(world.width() / 2f, world.height() / 2f, tile.x, tile.y);
+                float trns = Math.max(world.width(), world.height()) * Mathf.sqrt2 * tilesize;
+                float spawnX = Mathf.clamp(world.width() * tilesize / 2f + Angles.trnsx(angle, trns), -margin, world.width() * tilesize + margin);
+                float spawnY = Mathf.clamp(world.height() * tilesize / 2f + Angles.trnsy(angle, trns), -margin, world.height() * tilesize + margin);
+                cons.get(spawnX, spawnY);
+            }else{
+                cons.get(tile.worldx(), tile.worldy());
+            }
         }
 
-        if(state.rules.attackMode && state.teams.isActive(state.rules.waveTeam)){
+        if(state.rules.wavesSpawnAtCores && state.rules.attackMode && state.teams.isActive(state.rules.waveTeam)){
             for(Building core : state.rules.waveTeam.data().cores){
+                if(filterPos != -1 && filterPos != core.pos()) continue;
+
                 cons.get(core.x, core.y);
             }
         }
+    }
+
+    public int countGroundSpawns(){
+        tmpCount = 0;
+        eachGroundSpawn((x, y) -> tmpCount ++);
+        return tmpCount;
+    }
+
+    public int countFlyerSpawns(){
+        tmpCount = 0;
+        eachFlyerSpawn(-1, (x, y) -> tmpCount ++);
+        return tmpCount;
     }
 
     public boolean isSpawning(){
         return spawning && !net.client();
     }
 
-    private void reset(){
+    public void reset(){
         spawning = false;
         spawns.clear();
 
@@ -177,11 +225,13 @@ public class WaveSpawner{
         }
     }
 
-    private void spawnEffect(Unit unit){
-        unit.rotation = unit.angleTo(world.width()/2f * tilesize, world.height()/2f * tilesize);
+    /** Applies the standard wave spawn effects to a unit - invincibility, unmoving. */
+    public void spawnEffect(Unit unit){
         unit.apply(StatusEffects.unmoving, 30f);
-        unit.add();
+        unit.apply(StatusEffects.invincible, 60f);
+        unit.unloaded();
 
+        Events.fire(new UnitSpawnEvent(unit));
         Call.spawnEffect(unit.x, unit.y, unit.rotation, unit.type);
     }
 
@@ -191,6 +241,7 @@ public class WaveSpawner{
 
     @Remote(called = Loc.server, unreliable = true)
     public static void spawnEffect(float x, float y, float rotation, UnitType u){
+
         Fx.unitSpawn.at(x, y, rotation, u);
 
         Time.run(30f, () -> Fx.spawn.at(x, y));

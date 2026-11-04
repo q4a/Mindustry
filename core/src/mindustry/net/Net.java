@@ -3,9 +3,10 @@ package mindustry.net;
 import arc.*;
 import arc.func.*;
 import arc.net.*;
+import arc.net.Server.*;
 import arc.struct.*;
 import arc.util.*;
-import arc.util.async.*;
+import mindustry.game.EventType.*;
 import mindustry.gen.*;
 import mindustry.net.Packets.*;
 import mindustry.net.Streamable.*;
@@ -21,6 +22,8 @@ import static mindustry.Vars.*;
 
 @SuppressWarnings("unchecked")
 public class Net{
+    public static final int packetIdAssetStream, packetIdWorldStream, packetIdTextureStream;
+
     private static Seq<Prov<? extends Packet>> packetProvs = new Seq<>();
     private static Seq<Class<? extends Packet>> packetClasses = new Seq<>();
     private static ObjectIntMap<Class<?>> packetToId = new ObjectIntMap<>();
@@ -34,26 +37,37 @@ public class Net{
     private final ObjectMap<Class<?>, Cons> clientListeners = new ObjectMap<>();
     private final ObjectMap<Class<?>, Cons2<NetConnection, Object>> serverListeners = new ObjectMap<>();
     private final IntMap<StreamBuilder> streams = new IntMap<>();
-    private final ExecutorService pingExecutor = Threads.cachedExecutor();
+    private final ExecutorService pingExecutor =
+        OS.isIos ? Threads.boundedExecutor("Ping Servers", 32) : //on IOS, 256 threads can crash, so limit the amount
+        Threads.unboundedExecutor();
 
     private final NetProvider provider;
 
     static{
         registerPacket(StreamBegin::new);
         registerPacket(StreamChunk::new);
-        registerPacket(WorldStream::new);
+        packetIdWorldStream = registerPacket(WorldStream::new);
         registerPacket(ConnectPacket::new);
+        registerPacket(AssetRequirementStream::new);
+        packetIdAssetStream = registerPacket(AssetStream::new);
+        packetIdTextureStream = registerPacket(TextureStream::new);
 
         //register generated packet classes
         Call.registerPackets();
     }
 
     /** Registers a new packet type for serialization. */
-    public static <T extends Packet> void registerPacket(Prov<T> cons){
+    public static <T extends Packet> int registerPacket(Prov<T> cons){
+        int id = packetProvs.size;
         packetProvs.add(cons);
         var t = cons.get();
         packetClasses.add(t.getClass());
-        packetToId.put(t.getClass(), packetProvs.size - 1);
+        packetToId.put(t.getClass(), id);
+        return id;
+    }
+
+    public static byte getPacketClassId(Class<?> c){
+        return (byte)packetToId.get(c, -1);
     }
 
     public static byte getPacketId(Packet packet){
@@ -96,9 +110,9 @@ public class Net{
             String type = t.getClass().toString().toLowerCase();
             boolean isError = false;
 
-            if(e instanceof BufferUnderflowException || e instanceof BufferOverflowException){
+            if(e instanceof BufferUnderflowException || e instanceof BufferOverflowException || e.getCause() instanceof EOFException){
                 error = Core.bundle.get("error.io");
-            }else if(error.equals("mismatch") || e instanceof LZ4Exception || (e instanceof IndexOutOfBoundsException && e.getStackTrace()[0].getClassName().contains("java.nio"))){
+            }else if(error.equals("mismatch") || e instanceof LZ4Exception || (e instanceof IndexOutOfBoundsException && e.getStackTrace().length > 0 && e.getStackTrace()[0].getClassName().contains("java.nio"))){
                 error = Core.bundle.get("error.mismatch");
             }else if(error.contains("port out of range") || error.contains("invalid argument") || (error.contains("invalid") && error.contains("address")) || Strings.neatError(e).contains("address associated")){
                 error = Core.bundle.get("error.invalidaddress");
@@ -153,8 +167,12 @@ public class Net{
      * Connect to an address.
      */
     public void connect(String ip, int port, Runnable success){
+        streams.clear();
+        currentStream = null;
+
         try{
             if(!active){
+                Events.fire(new ClientServerConnectEvent(ip, port));
                 provider.connectClient(ip, port, success);
                 active = true;
                 server = false;
@@ -202,6 +220,10 @@ public class Net{
         provider.disconnectClient();
         server = false;
         active = false;
+        for(var stream : streams){
+            stream.value.close();
+        }
+        currentStream = null;
     }
 
     /**
@@ -222,21 +244,20 @@ public class Net{
     /** Send an object to all connected clients, or to the server if this is a client.*/
     public void send(Object object, boolean reliable){
         if(server){
-            for(NetConnection con : provider.getConnections()){
-                con.send(object, reliable);
-            }
+            provider.sendAllServer(object, reliable);
         }else{
             provider.sendClient(object, reliable);
         }
     }
 
+    /** Server bulk-send to several clients. */
+    public void send(Object object, Iterable<NetConnection> connections, boolean reliable){
+        provider.sendAllServer(object, connections, reliable);
+    }
+
     /** Send an object to everyone EXCEPT a certain client. Server-side only.*/
     public void sendExcept(NetConnection except, Object object, boolean reliable){
-        for(NetConnection con : getConnections()){
-            if(con != except){
-                con.send(object, reliable);
-            }
-        }
+        provider.sendExceptServer(except, object, reliable);
     }
 
     public @Nullable StreamBuilder getCurrentStream(){
@@ -261,10 +282,18 @@ public class Net{
      * Call to handle a packet being received for the client.
      */
     public void handleClientReceived(Packet object){
+        if(!object.allow(false)){
+            return;
+        }
+
         object.handled();
 
         if(object instanceof StreamBegin b){
-            streams.put(b.id, currentStream = new StreamBuilder(b));
+            streams.put(b.id, currentStream = new StreamBuilder(b, ((Streamable)Net.newPacket(b.type)).incremental()));
+            b.incrementalStream = currentStream.incrementalStream;
+
+            var listeners = clientListeners.get(StreamBegin.class);
+            if(listeners != null) listeners.get(object);
 
         }else if(object instanceof StreamChunk c){
             StreamBuilder builder = streams.get(c.id);
@@ -272,10 +301,23 @@ public class Net{
                 throw new RuntimeException("Received stream chunk without a StreamBegin beforehand!");
             }
             builder.add(c.data);
+
+            if(ui.loadfrag.showingProgress()){
+                ui.loadfrag.setProgress(builder.progress());
+                ui.loadfrag.snapProgress();
+            }
+
+            netClient.resetTimeout();
+
             if(builder.isDone()){
                 streams.remove(builder.id);
-                handleClientReceived(builder.build());
-                currentStream = null;
+                //incremental streams don't send an event as the data gets handled as it comes in
+                if(!builder.incremental){
+                    handleClientReceived(builder.build());
+                    currentStream = null;
+                }else{
+                    builder.incrementalStream.finish();
+                }
             }
         }else{
             int p = object.getPriority();
@@ -296,14 +338,20 @@ public class Net{
      * Call to handle a packet being received for the server.
      */
     public void handleServerReceived(NetConnection connection, Packet object){
-        object.handled();
+        if(!object.allow(true)){
+            return;
+        }
 
         try{
-            //handle object normally
-            if(serverListeners.get(object.getClass()) != null){
-                serverListeners.get(object.getClass()).get(connection, object);
-            }else{
-                object.handleServer(connection);
+            if(connection.hasConnected || object.getPriority() == Packet.priorityHigh){
+                object.handled();
+
+                //handle object normally
+                if(serverListeners.get(object.getClass()) != null){
+                    serverListeners.get(object.getClass()).get(connection, object);
+                }else{
+                    object.handleServer(connection);
+                }
             }
         }catch(ValidateException e){
             //ignore invalid actions
@@ -319,8 +367,18 @@ public class Net{
         }
     }
 
+    /** Sets a connection filter by IP address. If the filter returns {@code false}, the connection will be closed. Server only. */
+    public void setConnectFilter(@Nullable ServerConnectFilter filter){
+        provider.setConnectFilter(filter);
+    }
+
+    public @Nullable ServerConnectFilter getConnectFilter(){
+        return provider.getConnectFilter();
+    }
+
     /**
      * Pings a host in a pooled thread. If an error occurred, failed() should be called with the exception.
+     * If the port is the default mindustry port, SRV records are checked too.
      */
     public void pingHost(String address, int port, Cons<Host> valid, Cons<Exception> failed){
         pingExecutor.submit(() -> provider.pingHost(address, port, valid, failed));
@@ -355,6 +413,30 @@ public class Net{
 
     /** Networking implementation. */
     public interface NetProvider{
+
+        /** Sends a packet to a specific list of clients. */
+        default void sendAllServer(Object object, Iterable<NetConnection> connections, boolean reliable){
+            for(NetConnection con : connections){
+                con.send(object, reliable);
+            }
+        }
+
+        /** Sends a packet to all connected clients. */
+        default void sendAllServer(Object object, boolean reliable){
+            for(NetConnection con : getConnections()){
+                con.send(object, reliable);
+            }
+        }
+
+        /** Sends a packet to all connected clients, except the specified one. */
+        default void sendExceptServer(NetConnection except, Object object, boolean reliable){
+            for(NetConnection con : getConnections()){
+                if(con != except){
+                    con.send(object, reliable);
+                }
+            }
+        }
+
         /** Connect to a server. */
         void connectClient(String ip, int port, Runnable success) throws IOException;
 
@@ -371,7 +453,10 @@ public class Net{
          */
         void discoverServers(Cons<Host> callback, Runnable done);
 
-        /** Ping a host. If an error occurred, failed() should be called with the exception. This method should block. */
+        /**
+         * Ping a host. If an error occurred, failed() should be called with the exception. This method should block.
+         * If the port is the default mindustry port (6567), SRV records are checked too.
+         */
         void pingHost(String address, int port, Cons<Host> valid, Cons<Exception> failed);
 
         /** Host a server at specified port. */
@@ -388,6 +473,12 @@ public class Net{
             disconnectClient();
             closeServer();
         }
-    }
 
+        /** Sets a connection filter by IP address. If the filter returns {@code false}, the connection will be closed. */
+        default void setConnectFilter(Server.ServerConnectFilter connectFilter){}
+
+        default @Nullable ServerConnectFilter getConnectFilter(){
+            return null;
+        }
+    }
 }

@@ -16,7 +16,6 @@ public abstract class NetConnection{
     public boolean mobile, modclient;
     public @Nullable Player player;
     public boolean kicked = false;
-    public long syncTime;
 
     /** When this connection was established. */
     public long connectTime = Time.millis();
@@ -26,12 +25,24 @@ public abstract class NetConnection{
     public long lastReceivedClientTime;
     /** Build requests that have been recently rejected. This is cleared every snapshot. */
     public Seq<BuildPlan> rejectedRequests = new Seq<>();
+    /** Handles chat spam rate limits. */
+    public Ratekeeper chatRate = new Ratekeeper();
+    /** Handles packet spam rate limits. */
+    public Ratekeeper packetRate = new Ratekeeper();
+    /** Entities that only this player will get synced to them. */
+    public Seq<Syncc> localEntities = new Seq<>(false);
 
-    public boolean hasConnected, hasBegunConnecting, hasDisconnected;
+    //TODO: refactor to state enum
+    public boolean hasConnected, hasBegunConnecting, determiningAssets, receivingAssets, hasDisconnected;
     public float viewWidth, viewHeight, viewX, viewY;
 
     public NetConnection(String address){
         this.address = address;
+    }
+
+    /** Kick with the standard kick reason. */
+    public void kick(){
+        kick(KickReason.kick);
     }
 
     /** Kick with a special, localized reason. Use this if possible. */
@@ -55,7 +66,7 @@ public abstract class NetConnection{
     }
 
     /** Kick with an arbitrary reason, and a kick duration in milliseconds. */
-    private void kick(String reason, KickReason kickType, long kickDuration){
+    private void kick(String reason, @Nullable KickReason kickType, long kickDuration){
         if(kicked) return;
 
         Log.info("Kicking connection @ / @; Reason: @", address, uuid, reason == null ? kickType.name() : reason.replace("\n", " "));
@@ -70,14 +81,28 @@ public abstract class NetConnection{
             Call.kick(this, reason);
         }
 
-        close();
+        kickDisconnect();
 
         netServer.admins.save();
         kicked = true;
     }
 
+    protected void kickDisconnect(){
+        close();
+    }
+
     public boolean isConnected(){
         return true;
+    }
+
+    public void sendStreamAsync(Streamable stream, ByteArrayOutputStream data){
+        //default implementation assumes async stream sending is allowed
+        sendStream(stream, data);
+    }
+
+    public void sendStream(Streamable stream, ByteArrayOutputStream data){
+        stream.stream = new ByteArrayInputStream(data.toByteArray());
+        sendStream(stream);
     }
 
     public void sendStream(Streamable stream){
@@ -90,7 +115,7 @@ public abstract class NetConnection{
             cid = begin.id;
 
             while(stream.stream.available() > 0){
-                byte[] bytes = new byte[Math.min(512, stream.stream.available())];
+                byte[] bytes = new byte[Math.min(maxTcpSize, stream.stream.available())];
                 stream.stream.read(bytes);
 
                 StreamChunk chunk = new StreamChunk();
@@ -101,6 +126,10 @@ public abstract class NetConnection{
         }catch(IOException e){
             throw new RuntimeException(e);
         }
+    }
+
+    public void blacklist(){
+        netServer.admins.blacklistDos(address);
     }
 
     public abstract void send(Object object, boolean reliable);

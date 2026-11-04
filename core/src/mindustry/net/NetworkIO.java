@@ -1,19 +1,26 @@
 package mindustry.net;
 
 import arc.*;
+import arc.files.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
-import mindustry.content.*;
+import mindustry.*;
 import mindustry.core.*;
 import mindustry.ctype.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.io.*;
+import mindustry.logic.*;
 import mindustry.maps.Map;
+import mindustry.mod.*;
+import mindustry.mod.data.*;
 import mindustry.net.Administration.*;
+import mindustry.type.*;
 
 import java.io.*;
 import java.nio.*;
+import java.nio.channels.*;
 import java.util.*;
 
 import static mindustry.Vars.*;
@@ -28,25 +35,40 @@ public class NetworkIO{
                 state.rules.researched.clear();
                 for(ContentType type : ContentType.all){
                     for(Content c : content.getBy(type)){
-                        if(c instanceof UnlockableContent u && u.unlocked() && TechTree.get(u) != null){
-                            state.rules.researched.add(u.name);
+                        if(c instanceof UnlockableContent u && u.unlocked() && u.techNode != null){
+                            state.rules.researched.add(u);
                         }
                     }
                 }
             }
 
+            var writer = SaveIO.getSaveWriter();
+
+            //data patches must be first, as rules can involve patched content
+            writer.writeDataPatches(stream, false);
+
             stream.writeUTF(JsonIO.write(state.rules));
-            SaveIO.getSaveWriter().writeStringMap(stream, state.map.tags);
+            stream.writeUTF(JsonIO.write(state.mapLocales));
+            writer.writeStringMap(stream, state.map.tags);
 
             stream.writeInt(state.wave);
             stream.writeFloat(state.wavetime);
+            stream.writeDouble(state.tick);
+            stream.writeLong(GlobalVars.rand.seed0);
+            stream.writeLong(GlobalVars.rand.seed1);
 
             stream.writeInt(player.id);
-            player.write(Writes.get(stream));
+            player.write(new Writes(stream));
 
-            SaveIO.getSaveWriter().writeContentHeader(stream);
-            SaveIO.getSaveWriter().writeMap(stream);
-            SaveIO.getSaveWriter().writeTeamBlocks(stream);
+            writer.writeContentHeader(stream);
+            writer.writeMap(stream);
+            //these three calls mimic what writeEntities has, except with a custom filter, which is a bit fragile
+            writer.writeEntityMapping(stream);
+            writer.writeTeamBlocks(stream);
+            writer.writeWorldEntities(stream, state.rules.fog ? u -> !u.inFogTo(player.team()) : null);
+
+            writer.writeMarkers(stream);
+            writer.writeCustomChunks(stream, true);
         }catch(IOException e){
             throw new RuntimeException(e);
         }
@@ -55,23 +77,39 @@ public class NetworkIO{
     public static void loadWorld(InputStream is){
 
         try(DataInputStream stream = new DataInputStream(is)){
+            var writer = SaveIO.getSaveWriter();
             Time.clear();
+            writer.readDataPatches(stream, new SaveReadState(world.context));
+
             state.rules = JsonIO.read(Rules.class, stream.readUTF());
-            state.map = new Map(SaveIO.getSaveWriter().readStringMap(stream));
+            state.mapLocales = JsonIO.read(MapLocales.class, stream.readUTF());
+            state.map = new Map(writer.readStringMap(stream));
 
             state.wave = stream.readInt();
             state.wavetime = stream.readFloat();
+            state.tick = stream.readDouble();
+            GlobalVars.rand.seed0 = stream.readLong();
+            GlobalVars.rand.seed1 = stream.readLong();
+
+            Reads read = new Reads(stream);
 
             Groups.clear();
             int id = stream.readInt();
             player.reset();
-            player.read(Reads.get(stream));
+            player.read(read);
             player.id = id;
             player.add();
 
-            SaveIO.getSaveWriter().readContentHeader(stream);
-            SaveIO.getSaveWriter().readMap(stream, world.context);
-            SaveIO.getSaveWriter().readTeamBlocks(stream);
+            var state = new SaveReadState(world.context);
+
+            writer.readContentHeader(stream);
+            writer.readMap(stream, state);
+            writer.readEntities(stream, state);
+            writer.readMarkers(stream);
+            writer.readCustomChunks(stream);
+
+            Groups.all.each(e -> netClient.addRemovedEntity(e.id()));
+            Groups.unit.each(e -> netClient.addRemovedEntity(e.id()));
         }catch(IOException e){
             throw new RuntimeException(e);
         }finally{
@@ -79,8 +117,76 @@ public class NetworkIO{
         }
     }
 
+    public static void writeRequiredAssets(OutputStream os, Seq<DataAsset> assets){
+
+        try(DataOutputStream stream = new DataOutputStream(os)){
+            stream.writeInt(assets.size);
+            //can't use iterator as this seq might be accessed by multiple threads
+            for(int i = 0; i < assets.size; i ++){
+                var asset = assets.get(i);
+                if(asset.byteHash == null) throw new RuntimeException("Invalid asset (missing hash): " + asset.path);
+                stream.write(asset.byteHash);
+            }
+        }catch(IOException e){
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static Seq<String> readRequiredAssets(InputStream is){
+        Seq<String> result = new Seq<>();
+        byte[] bytes = new byte[32];
+        try(DataInputStream stream = new DataInputStream(is)){
+            int amount = stream.readInt();
+            for(int i = 0; i < amount; i++){
+                stream.readFully(bytes);
+                result.add(DataAssetCache.encodeHash(bytes));
+            }
+        }catch(IOException e){
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
+
+    public static void writeAssets(OutputStream os, Seq<DataAsset> assets){
+        try(DataOutputStream stream = new DataOutputStream(os)){
+            stream.writeInt(assets.size);
+            for(var asset : assets){
+                Fi file = asset.getCacheFileNoNull();
+                byte[] bytes = file.readBytes();
+                stream.writeInt(bytes.length);
+                stream.write(bytes);
+            }
+        }catch(IOException e){
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void loadAssets(InputStream is) throws IOException{
+        try(DataInputStream stream = new DataInputStream(is)){
+            int amount = stream.readInt();
+            for(int i = 0; i < amount; i++){
+                int len = stream.readInt();
+                byte[] bytes = new byte[len];
+                stream.readFully(bytes);
+                assetCache.add(bytes);
+            }
+        }catch(ClosedChannelException ignored){
+            //happens when the input stream is closed externally
+        }
+    }
+
+    public static void packTexture(OutputStream os, String name, byte[] pngData){
+        try(DataOutputStream stream = new DataOutputStream(os)){
+            stream.writeUTF(name);
+            stream.writeInt(pngData.length);
+            stream.write(pngData);
+        }catch(IOException e){
+            throw new RuntimeException(e);
+        }
+    }
+
     public static ByteBuffer writeServerData(){
-        String name = (headless ? Config.name.string() : player.name);
+        String name = (headless ? Config.serverName.string() : player.name);
         String description = headless && !Config.desc.string().equals("off") ? Config.desc.string() : "";
         String map = state.map.name();
 
@@ -98,25 +204,30 @@ public class NetworkIO{
         buffer.putInt(netServer.admins.getPlayerLimit());
 
         writeString(buffer, description, 100);
-        if(state.rules.modeName != null){
-            writeString(buffer, state.rules.modeName, 50);
-        }
+        writeString(buffer, state.rules.modeName == null ? "" : state.rules.modeName, 50);
+        buffer.putShort((short)Core.settings.getInt("port", port));
         return buffer;
     }
 
     public static Host readServerData(int ping, String hostAddress, ByteBuffer buffer){
         String host = readString(buffer);
         String map = readString(buffer);
+
         int players = buffer.getInt();
         int wave = buffer.getInt();
         int version = buffer.getInt();
         String vertype = readString(buffer);
-        Gamemode gamemode = Gamemode.all[buffer.get()];
+
+        byte mode = buffer.get();
+        Gamemode gamemode = Gamemode.all[mode < Gamemode.all.length ? mode : 0];
         int limit = buffer.getInt();
+
         String description = readString(buffer);
         String modeName = readString(buffer);
+        short port = buffer.getShort();
+        int hostPort = port != 0 ? port : Vars.port;
 
-        return new Host(ping, host, hostAddress, map, wave, players, version, vertype, gamemode, limit, description, modeName.isEmpty() ? null : modeName);
+        return new Host(ping, host, hostAddress, hostPort, map, wave, players, version, vertype, gamemode, limit, description, modeName.isEmpty() ? null : modeName);
     }
 
     private static void writeString(ByteBuffer buffer, String string, int maxlen){

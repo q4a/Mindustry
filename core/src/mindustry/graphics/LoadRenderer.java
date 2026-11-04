@@ -32,7 +32,7 @@ public class LoadRenderer implements Disposable{
     private float testprogress = 0f;
     private StringBuilder assetText = new StringBuilder();
     private Bar[] bars;
-    private Mesh mesh = MeshBuilder.buildHex(colorRed, 2, true, 1f);
+    private Mesh mesh = MeshBuilder.buildPlanetGrid(PlanetGrid.create(2), colorRed, 1f);
     private Camera3D cam = new Camera3D();
     private int lastLength = -1;
     private FxProcessor fx;
@@ -456,7 +456,7 @@ public class LoadRenderer implements Disposable{
                 float skew = bsize/2f;
 
                 float v = w / 2 + cx * dir - width / 2f;
-                Fill.rects(v + dir*skew, h/2f - bsize/2f + bsize/2f, width, bsize/2f, -dir*skew);
+                Fill.rects(v + dir*skew, h/2f, width, bsize/2f, -dir*skew);
                 Fill.rects(v, h/2f - bsize/2f, width, bsize/2f, dir*skew);
             }
 

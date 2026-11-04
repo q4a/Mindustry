@@ -4,6 +4,7 @@ import arc.func.*;
 import arc.math.*;
 import arc.math.geom.*;
 import arc.util.*;
+import mindustry.gen.*;
 
 import java.util.*;
 
@@ -12,11 +13,51 @@ public class Tiles implements Iterable<Tile>{
     public final int width, height;
 
     final Tile[] array;
+    final Puddle[] puddles;
+    final Fire[] fires;
+
+    @Nullable long[] tmpFloorState, tmpBlockState;
 
     public Tiles(int width, int height){
         this.array = new Tile[width * height];
         this.width = width;
         this.height = height;
+        this.puddles = new Puddle[width * height];
+        this.fires = new Fire[width * height];
+    }
+
+    public long getTmpFloorState(int pos){
+        return tmpFloorState == null ? 0 : tmpFloorState[pos];
+    }
+
+    public void setTmpFloorState(int pos, long value){
+        if(tmpFloorState == null || tmpFloorState.length != array.length) tmpFloorState = new long[array.length];
+        tmpFloorState[pos] = value;
+    }
+
+    public long getTmpBlockState(int pos){
+        return tmpBlockState == null ? 0 : tmpBlockState[pos];
+    }
+
+    public void setTmpBlockState(int pos, long value){
+        if(tmpBlockState == null || tmpBlockState.length != array.length) tmpBlockState = new long[array.length];
+        tmpBlockState[pos] = value;
+    }
+
+    public Puddle getPuddle(int pos){
+        return puddles[pos];
+    }
+
+    public void setPuddle(int pos, Puddle p){
+        puddles[pos] = p;
+    }
+
+    public @Nullable Fire getFire(int pos){
+        return fires[pos];
+    }
+
+    public void setFire(int pos, Fire f){
+        fires[pos] = f;
     }
 
     public void each(Intc2 cons){
@@ -37,6 +78,11 @@ public class Tiles implements Iterable<Tile>{
     /** set a tile at a position; does not range-check. use with caution. */
     public void set(int x, int y, Tile tile){
         array[y*width + x] = tile;
+    }
+
+    /** set a tile at a raw array position; used for fast iteration / 1-D for-loops */
+    public void seti(int i, Tile tile){
+        array[i] = tile;
     }
 
     /** @return whether these coordinates are in bounds */

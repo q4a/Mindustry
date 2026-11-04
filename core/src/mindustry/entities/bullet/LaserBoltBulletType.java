@@ -1,8 +1,8 @@
 package mindustry.entities.bullet;
 
 import arc.graphics.g2d.*;
-import mindustry.gen.*;
 import mindustry.content.*;
+import mindustry.gen.*;
 import mindustry.graphics.*;
 
 public class LaserBoltBulletType extends BasicBulletType{
@@ -16,6 +16,7 @@ public class LaserBoltBulletType extends BasicBulletType{
         despawnEffect = Fx.hitLaser;
         hittable = false;
         reflectable = false;
+        laserBullet = true;
         lightColor = Pal.heal;
         lightOpacity = 0.6f;
     }

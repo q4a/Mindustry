@@ -7,7 +7,6 @@ import arc.util.*;
 import arc.util.io.*;
 import mindustry.*;
 import mindustry.game.EventType.*;
-import mindustry.io.legacy.*;
 import mindustry.io.versions.*;
 import mindustry.world.*;
 
@@ -21,7 +20,7 @@ public class SaveIO{
     /** Save format header. */
     public static final byte[] header = {'M', 'S', 'A', 'V'};
     public static final IntMap<SaveVersion> versions = new IntMap<>();
-    public static final Seq<SaveVersion> versionArray = Seq.with(new Save1(), new Save2(), new Save3(), new Save4(), new Save5());
+    public static final Seq<SaveVersion> versionArray = Seq.with(new Save1(), new Save2(), new Save3(), new Save4(), new Save5(), new Save6(), new Save7(), new Save8(), new Save9(), new Save10(), new Save11(), new Save12(), new Save13());
 
     static{
         for(SaveVersion version : versionArray){
@@ -33,15 +32,19 @@ public class SaveIO{
         return versionArray.peek();
     }
 
-    public static SaveVersion getSaveWriter(int version){
+    public static @Nullable SaveVersion getSaveWriter(int version){
         return versions.get(version);
     }
 
     public static void save(Fi file){
+        save(file, new SaveOptions());
+    }
+
+    public static void save(Fi file, SaveOptions options){
         boolean exists = file.exists();
         if(exists) file.moveTo(backupFileFor(file));
         try{
-            write(file);
+            write(file, options);
         }catch(Throwable e){
             if(exists) backupFileFor(file).moveTo(file);
             throw new RuntimeException(e);
@@ -57,8 +60,13 @@ public class SaveIO{
     }
 
     public static boolean isSaveValid(Fi file){
+        return isSaveFileValid(file) || isSaveFileValid(backupFileFor(file));
+    }
+
+    private static boolean isSaveFileValid(Fi file){
         try(DataInputStream stream = new DataInputStream(new InflaterInputStream(file.read(bufferSize)))){
-            return isSaveValid(stream);
+            getMeta(stream);
+            return true;
         }catch(Throwable e){
             return false;
         }
@@ -69,7 +77,6 @@ public class SaveIO{
             getMeta(stream);
             return true;
         }catch(Throwable e){
-            Log.err(e);
             return false;
         }
     }
@@ -88,7 +95,11 @@ public class SaveIO{
         try{
             readHeader(stream);
             int version = stream.readInt();
-            SaveMeta meta = versions.get(version).getMeta(stream);
+            SaveVersion ver = versions.get(version);
+
+            if(ver == null) throw new IOException("Unknown save version: " + version + ". Are you trying to load a save from a newer version?");
+
+            SaveMeta meta = ver.getMeta(stream);
             stream.close();
             return meta;
         }catch(IOException e){
@@ -104,23 +115,22 @@ public class SaveIO{
         return file.sibling(file.name() + "-backup." + file.extension());
     }
 
-    public static void write(Fi file, StringMap tags){
-        write(new FastDeflaterOutputStream(file.write(false, bufferSize)), tags);
+    public static void write(Fi file, SaveOptions options){
+        write(new FastDeflaterOutputStream(file.write(false, bufferSize)), options);
     }
 
     public static void write(Fi file){
-        write(file, null);
+        write(file, new SaveOptions());
     }
 
-    public static void write(OutputStream os, StringMap tags){
+    public static void write(OutputStream os, SaveOptions options){
         try(DataOutputStream stream = new DataOutputStream(os)){
+            Events.fire(new SaveWriteEvent());
+            SaveVersion ver = getVersion();
+
             stream.write(header);
-            stream.writeInt(getVersion().version);
-            if(tags == null){
-                getVersion().write(stream);
-            }else{
-                getVersion().write(stream, tags);
-            }
+            stream.writeInt(ver.version);
+            ver.write(stream, options);
         }catch(Throwable e){
             throw new RuntimeException(e);
         }
@@ -157,8 +167,15 @@ public class SaveIO{
             int version = stream.readInt();
             SaveVersion ver = versions.get(version);
 
-            ver.read(stream, counter, context);
-            Events.fire(new SaveLoadEvent());
+            if(ver == null) throw new IOException("Unknown save version: " + version + ". Are you trying to load a save from a newer version?");
+
+            ver.read(stream, counter, new SaveReadState(context));
+            Events.fire(new SaveLoadEvent(context.isMap()));
+
+            //this gets handled elsewhere when starting a new game or loading a sector
+            if(!context.isMap() && !state.isCampaign()){
+                Events.fire(new RulesLoadEvent(state.rules, true));
+            }
         }catch(Throwable e){
             throw new SaveException(e);
         }finally{

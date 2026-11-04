@@ -32,6 +32,8 @@ public class LightRenderer{
     public void add(float x, float y, float radius, Color color, float opacity){
         if(!enabled() || radius <= 0f) return;
 
+        //TODO: clipping.
+
         float res = Color.toFloatBits(color.r, color.g, color.b, opacity);
 
         if(circles.size <= circleIndex) circles.add(new CircleLight());
@@ -42,15 +44,22 @@ public class LightRenderer{
 
         circleIndex ++;
     }
-
+    
     public void add(float x, float y, TextureRegion region, Color color, float opacity){
+        add(x, y, region, 0f, color, opacity);
+    }
+
+    public void add(float x, float y, TextureRegion region, float rotation, Color color, float opacity){
         if(!enabled()) return;
 
         float res = color.toFloatBits();
+        float xscl = Draw.xscl, yscl = Draw.yscl;
         add(() -> {
             Draw.color(res);
             Draw.alpha(opacity);
-            Draw.rect(region, x, y);
+            Draw.scl(xscl, yscl);
+            Draw.rect(region, x, y, rotation);
+            Draw.scl();
         });
     }
 
@@ -63,12 +72,11 @@ public class LightRenderer{
             float rot = Mathf.angleExact(x2 - x, y2 - y);
             TextureRegion ledge = Core.atlas.find("circle-end"), lmid = Core.atlas.find("circle-mid");
 
-            float color = Draw.getColor().toFloatBits();
+            float color = Draw.getColorPacked();
             float u = lmid.u;
             float v = lmid.v2;
             float u2 = lmid.u2;
             float v2 = lmid.v;
-
 
             Vec2 v1 = Tmp.v1.trnsExact(rot + 90f, stroke);
             float lx1 = x - v1.x, ly1 = y - v1.y,
@@ -176,12 +184,13 @@ public class LightRenderer{
     }
 
     public boolean enabled(){
-        return state.rules.lighting && state.rules.ambientLight.a > 0.0001f;
+        return state.rules.lighting && state.rules.ambientLight.a > 0.0001f && renderer.drawLight;
     }
 
     public void draw(){
         if(!Vars.enableLight){
             lights.clear();
+            circleIndex = 0;
             return;
         }
 
@@ -191,7 +200,10 @@ public class LightRenderer{
 
         Draw.color();
         buffer.begin(Color.clear);
+        Draw.sort(false);
         Gl.blendEquationSeparate(Gl.funcAdd, Gl.max);
+        //apparently necessary
+        Blending.normal.apply();
 
         for(Runnable run : lights){
             run.run();
@@ -202,6 +214,7 @@ public class LightRenderer{
             Draw.rect(circleRegion, cir.x, cir.y, cir.radius * 2, cir.radius * 2);
         }
         Draw.reset();
+        Draw.sort(true);
         buffer.end();
         Gl.blendEquationSeparate(Gl.funcAdd, Gl.funcAdd);
 

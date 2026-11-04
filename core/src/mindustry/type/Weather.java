@@ -12,6 +12,7 @@ import arc.util.noise.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
 import mindustry.ctype.*;
+import mindustry.entities.effect.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.world.*;
@@ -22,6 +23,7 @@ import static mindustry.Vars.*;
 public class Weather extends UnlockableContent{
     /** Global random variable used for rendering. */
     public static final Rand rand = new Rand();
+    private static final float boundMax = 10000 * 8f;
 
     /** Default duration of this weather event in ticks. */
     public float duration = 10f * Time.toMinutes;
@@ -57,7 +59,7 @@ public class Weather extends UnlockableContent{
 
     public WeatherState create(float intensity, float duration){
         WeatherState entity = type.get();
-        entity.intensity(intensity);
+        entity.intensity(Mathf.clamp(intensity));
         entity.init(this);
         entity.life(duration);
         entity.add();
@@ -129,8 +131,8 @@ public class Weather extends UnlockableContent{
             float scl = rand.random(0.5f, 1f);
             float scl2 = rand.random(0.5f, 1f);
             float size = rand.random(sizeMin, sizeMax);
-            float x = (rand.random(0f, world.unitWidth()) + Time.time * windx * scl2);
-            float y = (rand.random(0f, world.unitHeight()) + Time.time * windy * scl);
+            float x = (rand.random(0f, boundMax) + Time.time * windx * scl2);
+            float y = (rand.random(0f, boundMax) + Time.time * windy * scl);
             float alpha = rand.random(minAlpha, maxAlpha);
             float rotation = randomParticleRotation ? rand.random(0f, 360f) : 0f;
 
@@ -148,6 +150,8 @@ public class Weather extends UnlockableContent{
                 Draw.rect(region, x, y, size, size, rotation);
             }
         }
+
+        Draw.reset();
     }
 
     public static void drawRain(float sizeMin, float sizeMax, float xspeed, float yspeed, float density, float intensity, float stroke, Color color){
@@ -159,15 +163,15 @@ public class Weather extends UnlockableContent{
         Core.camera.bounds(Tmp.r2);
         int total = (int)(Tmp.r1.area() / density * intensity);
         Lines.stroke(stroke);
-        float alpha = Draw.getColor().a;
+        float alpha = Draw.getColorAlpha();
         Draw.color(color);
 
         for(int i = 0; i < total; i++){
             float scl = rand.random(0.5f, 1f);
             float scl2 = rand.random(0.5f, 1f);
             float size = rand.random(sizeMin, sizeMax);
-            float x = (rand.random(0f, world.unitWidth()) + Time.time * xspeed * scl2);
-            float y = (rand.random(0f, world.unitHeight()) - Time.time * yspeed * scl);
+            float x = (rand.random(0f, boundMax) + Time.time * xspeed * scl2);
+            float y = (rand.random(0f, boundMax) - Time.time * yspeed * scl);
             float tint = rand.random(1f) * alpha;
 
             x -= Tmp.r1.x;
@@ -200,8 +204,8 @@ public class Weather extends UnlockableContent{
 
             int pos = (int)((time));
             float life = time % 1f;
-            float x = (rand.random(0f, world.unitWidth()) + pos*953);
-            float y = (rand.random(0f, world.unitHeight()) - pos*453);
+            float x = (rand.random(0f, boundMax) + pos*953);
+            float y = (rand.random(0f, boundMax) - pos*453);
 
             x -= Tmp.r1.x;
             y -= Tmp.r1.y;
@@ -222,7 +226,7 @@ public class Weather extends UnlockableContent{
                     Draw.alpha(Mathf.slope(life) * opacity);
 
                     float space = 45f;
-                    for(int j : new int[]{-1, 1}){
+                    for(int j : Mathf.signs){
                         Tmp.v1.trns(90f + j*space, 1f + 5f * life);
                         Lines.lineAngle(x + Tmp.v1.x, y + Tmp.v1.y, 90f + j*space, 3f * (1f - life));
                     }
@@ -232,33 +236,12 @@ public class Weather extends UnlockableContent{
     }
 
     public static void drawNoiseLayers(Texture noise, Color color, float noisescl, float opacity, float baseSpeed, float intensity, float vwindx, float vwindy,
-                                       int layers, float layerSpeedM , float layerAlphaM, float layerSclM, float layerColorM){
-        float sspeed = 1f, sscl = 1f, salpha = 1f, offset = 0f;
-        Color col = Tmp.c1.set(color);
-        for(int i = 0; i < layers; i++){
-            drawNoise(noise, col, noisescl * sscl, salpha * opacity, sspeed * baseSpeed, intensity, vwindx, vwindy, offset);
-            sspeed *= layerSpeedM;
-            salpha *= layerAlphaM;
-            sscl *= layerSclM;
-            offset += 0.29f;
-            col.mul(layerColorM);
-        }
+                                    int layers, float layerSpeedM, float layerAlphaM, float layerSclM, float layerColorM){
+        NoiseEffect.drawNoiseLayers(noise, color, noisescl, opacity, baseSpeed, intensity, vwindx, vwindy, layers, layerSpeedM, layerAlphaM, layerSclM, layerColorM);
     }
 
     public static void drawNoise(Texture noise, Color color, float noisescl, float opacity, float baseSpeed, float intensity, float vwindx, float vwindy, float offset){
-        Draw.alpha(opacity);
-        Draw.tint(color);
-
-        float speed = baseSpeed * intensity;
-        float windx = vwindx * speed, windy = vwindy * speed;
-
-        float scale = 1f / noisescl;
-        float scroll = Time.time * scale + offset;
-        Tmp.tr1.texture = noise;
-        Core.camera.bounds(Tmp.r1);
-        Tmp.tr1.set(Tmp.r1.x*scale, Tmp.r1.y*scale, (Tmp.r1.x + Tmp.r1.width)*scale, (Tmp.r1.y + Tmp.r1.height)*scale);
-        Tmp.tr1.scroll(-windx * scroll, -windy * scroll);
-        Draw.rect(Tmp.tr1, Core.camera.position.x, Core.camera.position.y, Core.camera.width, -Core.camera.height);
+        NoiseEffect.drawNoise(noise, color, noisescl, opacity, baseSpeed, intensity, vwindx, vwindy, offset);
     }
 
     @Override
@@ -278,7 +261,7 @@ public class Weather extends UnlockableContent{
 
     public static class WeatherEntry{
         /** The type of weather used. */
-        public Weather weather;
+        public Weather weather = Weathers.rain;
         /** Minimum and maximum spacing between weather events. Does not include the time of the event itself. */
         public float minFrequency, maxFrequency, minDuration, maxDuration;
         /** Cooldown time before the next weather event takes place This is *state*, not configuration. */
@@ -312,7 +295,7 @@ public class Weather extends UnlockableContent{
     @EntityDef(value = {WeatherStatec.class}, pooled = true, isFinal = false)
     @Component(base = true)
     abstract static class WeatherStateComp implements Drawc, Syncc{
-        private static final float fadeTime = 60 * 4;
+        public static final float fadeTime = 60 * 4;
 
         Weather weather;
         float intensity = 1f, opacity = 0f, life, effectTimer;
@@ -342,15 +325,15 @@ public class Weather extends UnlockableContent{
 
         @Override
         public void draw(){
-            if(renderer.weatherAlpha() > 0.0001f && renderer.drawWeather && Core.settings.getBool("showweather")){
+            if(renderer.weatherAlpha > 0.0001f && renderer.drawWeather && Core.settings.getBool("showweather")){
                 Draw.draw(Layer.weather, () -> {
-                    Draw.alpha(renderer.weatherAlpha() * opacity * weather.opacityMultiplier);
+                    Draw.alpha(renderer.weatherAlpha * opacity * weather.opacityMultiplier);
                     weather.drawOver(self());
                     Draw.reset();
                 });
 
                 Draw.draw(Layer.debris, () -> {
-                    Draw.alpha(renderer.weatherAlpha() * opacity * weather.opacityMultiplier);
+                    Draw.alpha(renderer.weatherAlpha * opacity * weather.opacityMultiplier);
                     weather.drawUnder(self());
                     Draw.reset();
                 });

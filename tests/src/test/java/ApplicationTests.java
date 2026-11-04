@@ -5,18 +5,16 @@ import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
-import arc.util.serialization.*;
-import arc.util.serialization.JsonValue.*;
 import mindustry.*;
 import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.core.GameState.*;
 import mindustry.ctype.*;
 import mindustry.entities.units.*;
+import mindustry.game.MapObjectives.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.io.*;
-import mindustry.io.SaveIO.*;
 import mindustry.maps.*;
 import mindustry.mod.*;
 import mindustry.mod.Mods.*;
@@ -24,6 +22,7 @@ import mindustry.net.*;
 import mindustry.net.Packets.*;
 import mindustry.type.*;
 import mindustry.world.*;
+import mindustry.world.blocks.payloads.*;
 import mindustry.world.blocks.storage.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.*;
@@ -39,7 +38,6 @@ import static org.junit.jupiter.api.DynamicTest.*;
 public class ApplicationTests{
     static Map testMap;
     static boolean initialized;
-    //core/assets
     static final Fi testDataFolder = new Fi("../../tests/build/test_data");
 
     @BeforeAll
@@ -104,7 +102,7 @@ public class ApplicationTests{
                 public void init(){
                     super.init();
                     begins[0] = true;
-                    testMap = maps.loadInternalMap("groundZero");
+                    testMap = maps.loadInternalMap("serpulo/groundZero");
                     Thread.currentThread().interrupt();
                 }
             };
@@ -189,7 +187,7 @@ public class ApplicationTests{
 
     @Test
     void writeRules(){
-        ByteBuffer buffer = ByteBuffer.allocate(500);
+        ByteBuffer buffer = ByteBuffer.allocate(1000);
 
         Rules rules = new Rules();
         rules.attackMode = true;
@@ -220,22 +218,6 @@ public class ApplicationTests{
         String str2 = JsonIO.write(new Rules(){{
             attackMode = true;
         }});
-        Log.info(str2);
-    }
-
-    @Test
-    void serverListJson(){
-        String[] files = {"servers_v6.json", "servers_v7.json", "servers_be.json"};
-
-        for(String file : files){
-            try{
-                String str = Core.files.absolute("./../../" + file).readString();
-                assertEquals(ValueType.array, new JsonReader().parse(str).type());
-                assertTrue(Jval.read(str).isArray());
-            }catch(Exception e){
-                fail("Failed to parse " + file, e);
-            }
-        }
     }
 
     @Test
@@ -349,13 +331,22 @@ public class ApplicationTests{
     }
 
     @Test
-    void load(){
+    void saveLoad(){
         world.loadMap(testMap);
         Map map = state.map;
+
+        float hp = 30f;
+
+        Unit unit = UnitTypes.dagger.spawn(Team.sharded, 20f, 30f);
+        unit.health = hp;
 
         SaveIO.save(saveDirectory.child("0.msav"));
         resetWorld();
         SaveIO.load(saveDirectory.child("0.msav"));
+
+        Unit spawned = Groups.unit.find(u -> u.type == UnitTypes.dagger);
+        assertNotNull(spawned, "Saved daggers must persist");
+        assertEquals(hp, spawned.health, "Spawned dagger health must save.");
 
         assertEquals(world.width(), map.width);
         assertEquals(world.height(), map.height);
@@ -383,6 +374,7 @@ public class ApplicationTests{
     void liquidOutput(){
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
 
         world.tile(0, 0).setBlock(Blocks.liquidSource, Team.sharded);
         world.tile(0, 0).build.configureAny(Liquids.water);
@@ -399,6 +391,7 @@ public class ApplicationTests{
     void liquidJunctionOutput(){
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
 
         Tile source = world.rawTile(0, 0), tank = world.rawTile(1, 4), junction = world.rawTile(0, 1), conduit = world.rawTile(0, 2);
 
@@ -421,9 +414,10 @@ public class ApplicationTests{
     void liquidRouterOutputAll() {
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
         Tile source = world.rawTile(4,0), router = world.rawTile(4, 2), conduitUp1 = world.rawTile(4,1),
-                conduitLeft = world.rawTile(3,2), conduitUp2 = world.rawTile(4, 3), conduitRight = world.rawTile(5, 2),
-                leftTank = world.rawTile(1, 2), topTank = world.rawTile(4,5), rightTank = world.rawTile(7, 2);
+        conduitLeft = world.rawTile(3,2), conduitUp2 = world.rawTile(4, 3), conduitRight = world.rawTile(5, 2),
+        leftTank = world.rawTile(1, 2), topTank = world.rawTile(4,5), rightTank = world.rawTile(7, 2);
 
         source.setBlock(Blocks.liquidSource, Team.sharded);
         source.build.configureAny(Liquids.water);
@@ -446,10 +440,11 @@ public class ApplicationTests{
     void sorterOutputCorrect() {
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
         Tile source1 = world.rawTile(4, 0), source2 = world.rawTile(6, 0), s1conveyor = world.rawTile(4, 1),
-                s2conveyor = world.rawTile(6, 1), s1s2conveyor = world.rawTile(5, 1), sorter = world.rawTile(5, 2),
-                leftconveyor = world.rawTile(4, 2), rightconveyor = world.rawTile(6, 2), sortedconveyor = world.rawTile(5, 3),
-                leftVault = world.rawTile(2, 2), rightVault = world.rawTile(8, 2), topVault = world.rawTile(5, 5);
+        s2conveyor = world.rawTile(6, 1), s1s2conveyor = world.rawTile(5, 1), sorter = world.rawTile(5, 2),
+        leftconveyor = world.rawTile(4, 2), rightconveyor = world.rawTile(6, 2), sortedconveyor = world.rawTile(5, 3),
+        leftVault = world.rawTile(2, 2), rightVault = world.rawTile(8, 2), topVault = world.rawTile(5, 5);
 
         source1.setBlock(Blocks.itemSource, Team.sharded);
         source1.build.configureAny(Items.coal);
@@ -478,10 +473,11 @@ public class ApplicationTests{
     void routerOutputAll() {
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
         Tile source1 = world.rawTile(5, 0),  conveyor = world.rawTile(5, 1),
-                router = world.rawTile(5, 2), leftconveyor = world.rawTile(4, 2), rightconveyor = world.rawTile(6, 2),
-                middleconveyor = world.rawTile(5, 3), leftVault = world.rawTile(2, 2),
-                rightVault = world.rawTile(8, 2), topVault = world.rawTile(5, 5);
+        router = world.rawTile(5, 2), leftconveyor = world.rawTile(4, 2), rightconveyor = world.rawTile(6, 2),
+        middleconveyor = world.rawTile(5, 3), leftVault = world.rawTile(2, 2),
+        rightVault = world.rawTile(8, 2), topVault = world.rawTile(5, 5);
 
         source1.setBlock(Blocks.itemSource, Team.sharded);
         source1.build.configureAny(Items.coal);
@@ -505,9 +501,10 @@ public class ApplicationTests{
     void junctionOutputCorrect() {
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
         Tile source1 = world.rawTile(5,0),source2 = world.rawTile(7, 2),  conveyor1 = world.rawTile(5, 1),
-                conveyor2 = world.rawTile(6,2), junction = world.rawTile(5, 2), conveyor3 = world.rawTile(5,3),
-                conveyor4 = world.rawTile(4,2), vault2 = world.rawTile(3, 1), vault1 = world.rawTile(5,5);
+        conveyor2 = world.rawTile(6,2), junction = world.rawTile(5, 2), conveyor3 = world.rawTile(5,3),
+        conveyor4 = world.rawTile(4,2), vault2 = world.rawTile(3, 1), vault1 = world.rawTile(5,5);
         source1.setBlock(Blocks.itemSource, Team.sharded);
         source1.build.configureAny(Items.coal);
         source2.setBlock(Blocks.itemSource, Team.sharded);
@@ -555,6 +552,7 @@ public class ApplicationTests{
 
         world.loadMap(testMap);
         state.set(State.playing);
+        state.rules.limitMapArea = false;
         int length = 128;
         world.tile(0, 0).setBlock(Blocks.itemSource, Team.sharded);
         world.tile(0, 0).build.configureAny(Items.copper);
@@ -584,13 +582,15 @@ public class ApplicationTests{
 
         entities.each(Building::updateProximity);
 
+        final int iterations = 100_000;
+
         //warmup
-        for(int i = 0; i < 100000; i++){
+        for(int i = 0; i < iterations; i++){
             entities.each(Building::update);
         }
 
         Time.mark();
-        for(int i = 0; i < 200000; i++){
+        for(int i = 0; i < iterations*2; i++){
             entities.each(Building::update);
         }
         Log.info(Time.elapsed() + "ms to process " + itemsa[0] + " items");
@@ -632,6 +632,26 @@ public class ApplicationTests{
 
         assertEquals(500, world.width());
         assertEquals(500, world.height());
+    }
+
+    @Test
+    void load152BESave(){
+        resetWorld();
+        SaveIO.load(Core.files.internal("152_be.msav"));
+
+        assertEquals(414, world.width());
+        assertEquals(414, world.height());
+    }
+
+    @Test
+    void load152Save(){
+        resetWorld();
+        SaveIO.load(Core.files.internal("152.msav"));
+
+        assertTrue(Groups.unit.contains(u -> u.type == UnitTypes.scepter));
+
+        assertEquals(2000, world.width());
+        assertEquals(195, world.height());
     }
 
     @Test
@@ -755,7 +775,7 @@ public class ApplicationTests{
 
     @Test
     void allBlockTest(){
-        Tiles tiles = world.resize(256 * 3 + 20, 10);
+        Tiles tiles = world.resize(80, 80);
 
         world.beginMapLoad();
         for(int x = 0; x < tiles.width; x++){
@@ -763,14 +783,24 @@ public class ApplicationTests{
                 tiles.set(x, y, new Tile(x, y, Blocks.stone, Blocks.air, Blocks.air));
             }
         }
-        int i = 0;
+        int maxHeight = 0;
+        state.rules.canGameOver = false;
+        state.rules.borderDarkness = false;
 
-        for(int x = 5; x < tiles.width && i < content.blocks().size; ){
-            Block block = content.block(i++);
+        for(int x = 0, y = 0, i = 0; i < content.blocks().size; i ++){
+            Block block = content.block(i);
             if(block.canBeBuilt()){
+                int offset = Math.max(block.size % 2 == 0 ? block.size/2 - 1 : block.size/2, 0);
+
+                if(x + block.size + 1 >= world.width()){
+                    y += maxHeight;
+                    maxHeight = 0;
+                    x = 0;
+                }
+
+                tiles.get(x + offset, y + offset).setBlock(block);
                 x += block.size;
-                tiles.get(x, 5).setBlock(block);
-                x += block.size;
+                maxHeight = Math.max(maxHeight, block.size);
             }
         }
         world.endMapLoad();
@@ -791,27 +821,91 @@ public class ApplicationTests{
         }
     }
 
+    void checkPayloads(){
+        for(int x = 0; x < world.tiles.width; x++){
+            for(int y = 0; y < world.tiles.height; y++){
+                Tile tile = world.rawTile(x, y);
+                if(tile.build != null && tile.isCenter() && !(tile.block() instanceof CoreBlock)){
+                    try{
+                        tile.build.update();
+                    }catch(Throwable t){
+                        fail("Failed to update block in payload: '" + ((BuildPayload)tile.build.getPayload()).block() + "'", t);
+                    }
+                    assertEquals(tile.block(), tile.build.block);
+                    assertEquals(tile.block().health, tile.build.health());
+                }
+            }
+        }
+    }
+
+    @Test
+    void allPayloadBlockTest(){
+        int ts = 20;
+        Tiles tiles = world.resize(ts * 3, ts * 3);
+
+        world.beginMapLoad();
+        for(int x = 0; x < tiles.width; x++){
+            for(int y = 0; y < tiles.height; y++){
+                tiles.set(x, y, new Tile(x, y, Blocks.stone, Blocks.air, Blocks.air));
+            }
+        }
+
+        tiles.getn(tiles.width - 2, tiles.height - 2).setBlock(Blocks.coreShard, Team.sharded);
+
+        Seq<Block> blocks = content.blocks().select(b -> b.canBeBuilt());
+        for(int i = 0; i < blocks.size; i++){
+            int x = (i % ts) * 3 + 1;
+            int y = (i / ts) * 3 + 1;
+            Tile tile = tiles.get(x, y);
+            tile.setBlock(Blocks.payloadConveyor, Team.sharded);
+            Building build = tile.build;
+            build.handlePayload(build, new BuildPayload(blocks.get(i), Team.sharded));
+        }
+        world.endMapLoad();
+
+        checkPayloads();
+
+        SaveIO.write(saveDirectory.child("payloads.msav"));
+        logic.reset();
+        SaveIO.load(saveDirectory.child("payloads.msav"));
+
+        checkPayloads();
+    }
+
     @TestFactory
     DynamicTest[] testSectorValidity(){
         Seq<DynamicTest> out = new Seq<>();
         if(world == null) world = new World();
 
-        for(SectorPreset zone : content.sectors()){
+        for(SectorPreset sector : content.sectors()){
 
-            out.add(dynamicTest(zone.name, () -> {
+            out.add(dynamicTest(sector.name, () -> {
                 Time.setDeltaProvider(() -> 1f);
 
                 logic.reset();
-                try{
-                    world.loadGenerator(zone.generator.map.width, zone.generator.map.height, zone.generator::generate);
-                }catch(SaveException e){
-                    //fails randomly and I don't care about fixing it
-                    e.printStackTrace();
-                    return;
-                }
-                zone.rules.get(state.rules);
+                //pathfinder pollutes queue with garbage, causing OOM
+                Reflect.<TaskQueue>get(HeadlessApplication.class, Core.app, "runnables").clear();
+                state.rules.sector = sector.sector;
+                world.loadGenerator(sector.generator.map.width, sector.generator.map.height, tiles -> sector.generator.generate(tiles, new WorldParams()));
+                sector.rules.get(state.rules);
                 ObjectSet<Item> resources = new ObjectSet<>();
                 boolean hasSpawnPoint = false;
+
+                assertFalse(state.rules.infiniteResources || Team.sharded.rules().infiniteResources, "Sector " + sector.name + " must not have infinite resources.");
+                assertFalse(state.rules.allowEditRules, "Sector " + sector.name + " must not have rule editing enabled.");
+                assertFalse(state.rules.allowEditWorldProcessors, "Sector " + sector.name + " must not have world processor editing enabled.");
+                assertEquals(Team.sharded, state.rules.defaultTeam, "Sector " + sector.name + " must have the Sharded player team.");
+                assertEquals(Vars.state.getPlanet() == Planets.serpulo ? Team.crux : Team.malis, state.rules.waveTeam, "Sector " + sector.name + " must have the correct enemy team.");
+
+                Seq<TimerObjective> timers = state.rules.objectives.all.select(m -> m instanceof TimerObjective && !m.hidden && ((TimerObjective)m).text != null &&
+                !((TimerObjective)m).text.isEmpty() && !((TimerObjective)m).text.contains("@")).as();
+
+                if(!timers.isEmpty()){
+                    fail("Sector " + sector.name + " has unlocalized objectives: " + timers.toString(", ", t -> "'" + t.text + "'"));
+                }
+
+                //TODO: some Erekir sectors (origin, caldera) modify the cap, why?
+                //assertEquals(0, state.rules.unitCap, "Sector " + sector.name + " must not modify the unit cap.");
 
                 for(Tile tile : world.tiles){
                     if(tile.drop() != null){
@@ -822,46 +916,51 @@ public class ApplicationTests{
                     }
                 }
 
-                Seq<SpawnGroup> spawns = state.rules.spawns;
+                if(state.rules.waves){
+                    Seq<SpawnGroup> spawns = state.rules.spawns;
 
-                int bossWave = 0;
-                if(state.rules.winWave > 0){
-                    bossWave = state.rules.winWave;
-                }else{
-                    outer:
-                    for(int i = 1; i <= 1000; i++){
-                        for(SpawnGroup spawn : spawns){
-                            if(spawn.effect == StatusEffects.boss && spawn.getSpawned(i) > 0){
-                                bossWave = i;
-                                break outer;
+                    int bossWave = 0;
+                    if(state.rules.winWave > 0){
+                        bossWave = state.rules.winWave;
+                    }else{
+                        outer:
+                        for(int i = 1; i <= 1000; i++){
+                            for(SpawnGroup spawn : spawns){
+                                if(spawn.effect == StatusEffects.boss && spawn.getSpawned(i) > 0){
+                                    bossWave = i;
+                                    break outer;
+                                }
                             }
                         }
                     }
-                }
 
-                if(state.rules.attackMode){
-                    bossWave = 100;
-                }else{
-                    assertNotEquals(0, bossWave, "Sector doesn't have a boss wave.");
-                }
-
-                //TODO check for difficulty?
-                for(int i = 1; i <= bossWave; i++){
-                    int total = 0;
-                    for(SpawnGroup spawn : spawns){
-                        total += spawn.getSpawned(i);
+                    if(state.rules.attackMode){
+                        bossWave = 100;
+                    }else{
+                        assertNotEquals(0, bossWave, "Sector " + sector.name + " doesn't have a boss/end wave.");
                     }
 
-                    assertNotEquals(0, total, "Sector " + zone + " has no spawned enemies at wave " + i);
-                    //TODO this is flawed and needs to be changed later
-                    //assertTrue(total < 75, "Sector spawns too many enemies at wave " + i + " (" + total + ")");
+                    if(state.rules.winWave > 0) bossWave = state.rules.winWave - 1;
+
+                    for(int i = 1; i <= bossWave; i++){
+                        int total = 0;
+                        for(SpawnGroup spawn : spawns){
+                            total += spawn.getSpawned(i - 1);
+                        }
+
+                        assertNotEquals(0, total, "Sector " + sector + " has no spawned enemies at wave " + i);
+                    }
                 }
 
-                assertEquals(1, Team.sharded.cores().size, "Sector must have one core: " + zone);
-                assertTrue(Team.sharded.core().items.total() < 1000, "Sector must not have starting resources: " + zone);
+                assertFalse(Vars.indexer.isBlockPresent(Blocks.powerSource), "Sector '" + sector + "' must not have power sources.");
+                assertFalse(Vars.indexer.isBlockPresent(Blocks.powerVoid), "Sector '" + sector + "' must not have power voids.");
+                assertFalse(Vars.indexer.isBlockPresent(Blocks.itemSource), "Sector '" + sector + "' must not have item sources.");
+                assertFalse(Vars.indexer.isBlockPresent(Blocks.liquidSource), "Sector '" + sector + "' must not have liquid sources.");
 
-                assertTrue(hasSpawnPoint, "Sector \"" + zone.name + "\" has no spawn points.");
-                assertTrue(spawner.countSpawns() > 0 || (state.rules.attackMode && state.rules.waveTeam.data().hasCore()), "Sector \"" + zone.name + "\" has no enemy spawn points: " + spawner.countSpawns());
+                assertEquals(1, Team.sharded.cores().size, "Sector must have one core: " + sector + " (" + Team.sharded.cores() + ")");
+
+                assertTrue(hasSpawnPoint, "Sector \"" + sector.name + "\" has no spawn points.");
+                assertTrue(spawner.countSpawns() > 0 || (state.rules.attackMode && state.rules.waveTeam.data().hasCore()), "Sector \"" + sector.name + "\" has no enemy spawn points: " + spawner.countSpawns());
             }));
         }
 

@@ -7,6 +7,7 @@ uniform vec2 u_uv;
 uniform vec2 u_uv2;
 uniform float u_progress;
 uniform float u_time;
+uniform float u_alpha;
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -18,11 +19,17 @@ bool id(vec2 coords, vec4 base){
 }
 
 bool cont(vec2 T, vec2 v){
-    const float step = 3.0;
+    const float step = 3.5;
     vec4 base = texture2D(u_texture, T);
     return base.a > 0.1 &&
            		(id(T + vec2(0, step) * v, base) || id(T + vec2(0, -step) * v, base) ||
-           		id(T + vec2(step, 0) * v, base) || id(T + vec2(-step, 0) * v, base));
+           		id(T + vec2(step, 0) * v, base) || id(T + vec2(-step, 0) * v, base) ||
+                id(T + vec2(step, step) * v, base) || id(T + vec2(step, -step) * v, base) ||
+                id(T + vec2(-step, -step) * v, base) || id(T + vec2(-step, step) * v, base));
+}
+
+vec4 blend(vec4 dst, vec4 src){
+    return src * src.a + dst * (1.0 - src.a);
 }
 
 void main(){
@@ -39,11 +46,11 @@ void main(){
 	float dst = (abs(center.x - coords.x) + abs(center.y - coords.y))/2.0;
 
 	if((mod(u_time / 1.5 + value, 20.0) < 15.0 && cont(t, v))){
-        gl_FragColor = v_color;
+        gl_FragColor = blend(color, v_color) * vec4(vec3(1.0), u_alpha);
     }else if(dst > (1.0-u_progress) * (center.x)){
-        gl_FragColor = color;
-    }else if((dst + 1.0 > (1.0-u_progress) * (center.x)) && color.a > 0.1){
-        gl_FragColor = v_color;
+        gl_FragColor = color * vec4(vec3(1.0), u_alpha);
+    }else if((dst + 2.0 > (1.0-u_progress) * (center.x)) && color.a > 0.1){
+        gl_FragColor = blend(color, v_color) * vec4(vec3(1.0), u_alpha);
     }else{
         gl_FragColor = vec4(0.0);
     }

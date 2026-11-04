@@ -8,14 +8,12 @@ public class Annotations{
     /** Indicates that a method overrides other methods. */
     @Target({ElementType.METHOD})
     @Retention(RetentionPolicy.SOURCE)
-    public @interface Replace{
-    }
+    public @interface Replace{}
 
     /** Indicates that a method should be final in all implementing classes. */
     @Target({ElementType.METHOD})
     @Retention(RetentionPolicy.SOURCE)
-    public @interface Final{
-    }
+    public @interface Final{}
 
     /** Indicates that a field will be interpolated when synced. */
     @Target({ElementType.FIELD})
@@ -30,15 +28,22 @@ public class Annotations{
     /** Indicates that a field will not be read from the server when syncing the local player state. */
     @Target({ElementType.FIELD})
     @Retention(RetentionPolicy.SOURCE)
-    public @interface SyncLocal{
+    public @interface SyncLocal{}
 
-    }
+    /** Indicates that a field should not be synced to clients (but may still be non-transient) */
+    @Target({ElementType.FIELD})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface NoSync{}
+
+    /** Indicates that a field should be synced, but not serialized */
+    @Target({ElementType.FIELD})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface NoSerialize{}
 
     /** Indicates that a component field is imported from other components. This means it doesn't actually exist. */
     @Target({ElementType.FIELD})
     @Retention(RetentionPolicy.SOURCE)
-    public @interface Import{
-    }
+    public @interface Import{}
 
     /** Indicates that a component field is read-only. */
     @Target({ElementType.FIELD, ElementType.METHOD})
@@ -53,6 +58,8 @@ public class Annotations{
         /** Whether to generate a base class for this components.
          * An entity cannot have two base classes, so only one component can have base be true. */
         boolean base() default false;
+        /** Whether to generate a proper interface for this component class. */
+        boolean genInterface() default true;
     }
 
     /** Indicates that a method is implemented by the annotation processor. */
@@ -78,9 +85,11 @@ public class Annotations{
     @Retention(RetentionPolicy.SOURCE)
     public @interface GroupDef{
         Class[] value();
+        Class[] exclude() default {};
         boolean collide() default false;
         boolean spatial() default false;
         boolean mapping() default false;
+        boolean update() default false;
     }
 
     /** Indicates an entity definition. */
@@ -100,13 +109,14 @@ public class Annotations{
         boolean genio() default true;
         /** Whether I made a massive mistake by merging two different class branches */
         boolean legacy() default false;
+        /** Groups to exclude. */
+        String[] excludeGroups() default {};
     }
 
     /** Indicates an internal interface for entity components. */
     @Target(ElementType.TYPE)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface EntityInterface{
-    }
+    public @interface EntityInterface{}
 
     //endregion
     //region misc. utility
@@ -145,15 +155,12 @@ public class Annotations{
     /** Indicates that a method should always call its super version. */
     @Target(ElementType.METHOD)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface CallSuper{
-
-    }
+    public @interface CallSuper{}
 
     /** Annotation that allows overriding CallSuper annotation. To be used on method that overrides method with CallSuper annotation from parent class. */
     @Target(ElementType.METHOD)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface OverrideCallSuper{
-    }
+    public @interface OverrideCallSuper{}
 
     //endregion
     //region struct
@@ -161,9 +168,7 @@ public class Annotations{
     /** Marks a class as a special value type struct. Class name must end in 'Struct'. */
     @Target(ElementType.TYPE)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface Struct{
-
-    }
+    public @interface Struct{}
 
     /** Marks a field of a struct. Optional. */
     @Target(ElementType.FIELD)
@@ -187,18 +192,16 @@ public class Annotations{
 
     /** A set of two booleans, one specifying server and one specifying client. */
     public enum Loc{
-        /** Method can only be invoked on the client from the server. */
+        /** Server only. */
         server(true, false),
-        /** Method can only be invoked on the server from the client. */
+        /** Client only. */
         client(false, true),
-        /** Method can be invoked from anywhere */
+        /** Both server and client. */
         both(true, true),
         /** Neither server nor client. */
         none(false, false);
 
-        /** If true, this method can be invoked ON clients FROM servers. */
         public final boolean isServer;
-        /** If true, this method can be invoked ON servers FROM clients. */
         public final boolean isClient;
 
         Loc(boolean server, boolean client){
@@ -227,16 +230,16 @@ public class Annotations{
     @Target(ElementType.METHOD)
     @Retention(RetentionPolicy.SOURCE)
     public @interface Remote{
-        /** Specifies the locations from which this method can be invoked. */
+        /** Specifies the locations from which this method can cause remote invocations (This -> Remote) [Default: Server -> Client]. */
         Loc targets() default Loc.server;
 
-        /** Specifies which methods are generated. Only affects server-to-client methods. */
+        /** Specifies which methods are generated. Only affects server-to-client methods (Server -> Client(s)) [Default: Server -> Client & Server -> All Clients]. */
         Variant variants() default Variant.all;
 
-        /** The local locations where this method is called locally, when invoked. */
+        /** The locations where this method is called locally, when invoked locally (This -> This) [Default: No local invocations]. */
         Loc called() default Loc.none;
 
-        /** Whether to forward this packet to all other clients upon receival. Client only. */
+        /** Whether the server should forward this packet to all other clients upon receival from a client (Client -> Server -> Other Clients). [Default: Don't Forward Client Invocations] */
         boolean forward() default false;
 
         /**
@@ -251,8 +254,7 @@ public class Annotations{
 
     @Target(ElementType.TYPE)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface TypeIOHandler{
-    }
+    public @interface TypeIOHandler{ }
 
     //endregion
 }

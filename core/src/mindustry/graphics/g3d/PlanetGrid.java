@@ -47,7 +47,7 @@ public class PlanetGrid{
         }
     }
 
-    public static PlanetGrid create(int size){
+    public static synchronized PlanetGrid create(int size){
         //cache grids between calls, since only ~5 different grids total are needed
         if(size < cache.length && cache[size] != null){
             return cache[size];
@@ -221,6 +221,8 @@ public class PlanetGrid{
     }
 
     public static class Ptile{
+        public static final Ptile empty = new Ptile(0, 0);
+
         public int id;
         public int edgeCount;
 
@@ -237,6 +239,14 @@ public class PlanetGrid{
             tiles = new Ptile[edgeCount];
             corners = new Corner[edgeCount];
             edges = new Edge[edgeCount];
+        }
+
+        @Override
+        public String toString(){
+            return "Ptile{" +
+            "id=" + id +
+            " " + v +
+            '}';
         }
     }
 

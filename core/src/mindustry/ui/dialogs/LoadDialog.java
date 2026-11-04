@@ -1,6 +1,7 @@
 package mindustry.ui.dialogs;
 
 import arc.*;
+import arc.files.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.scene.style.*;
@@ -8,7 +9,9 @@ import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import mindustry.*;
 import mindustry.core.GameState.*;
+import mindustry.game.*;
 import mindustry.game.Saves.*;
 import mindustry.gen.*;
 import mindustry.io.*;
@@ -20,8 +23,11 @@ import java.io.*;
 import static mindustry.Vars.*;
 
 public class LoadDialog extends BaseDialog{
-    ScrollPane pane;
     Table slots;
+    String searchString;
+    Seq<Gamemode> hidden;
+    TextField searchField;
+    ScrollPane pane;
 
     public LoadDialog(){
         this("@loadgame");
@@ -31,7 +37,10 @@ public class LoadDialog extends BaseDialog{
         super(title);
         setup();
 
-        shown(this::setup);
+        shown(() -> {
+            searchString = "";
+            setup();
+        });
         onResize(this::setup);
 
         addCloseButton();
@@ -42,10 +51,40 @@ public class LoadDialog extends BaseDialog{
         cont.clear();
 
         slots = new Table();
+        hidden = new Seq<>();
         pane = new ScrollPane(slots);
+
+        rebuild();
+
+        Table search = new Table();
+        search.image(Icon.zoom);
+        searchField = search.field("", t -> {
+            searchString = t.length() > 0 ? t.toLowerCase() : null;
+            rebuild();
+        }).maxTextLength(50).growX().get();
+        searchField.setMessageText("@save.search");
+        for(Gamemode mode : Gamemode.all){
+            TextureRegionDrawable icon = Vars.ui.getIcon("mode" + Strings.capitalize(mode.name()));
+            boolean sandbox = mode == Gamemode.sandbox;
+            if(Core.atlas.isFound(icon.getRegion()) || sandbox){
+                search.button(sandbox ? Icon.terrain : icon, Styles.emptyTogglei, () -> {
+                    if(!hidden.addUnique(mode)) hidden.remove(mode);
+                    rebuild();
+                }).size(60f).padLeft(-12f).checked(b -> !hidden.contains(mode)).tooltip("@mode." + mode.name() + ".name");
+            }
+        }
+
         pane.setFadeScrollBars(false);
         pane.setScrollingDisabled(true, false);
 
+        cont.add(search).growX();
+        cont.row();
+        cont.add(pane).growY();
+    }
+
+    public void rebuild(){
+
+        slots.clear();
         slots.marginRight(24).marginLeft(20f);
 
         Time.runTask(2f, () -> Core.scene.setScrollFocus(pane));
@@ -53,16 +92,20 @@ public class LoadDialog extends BaseDialog{
         Seq<SaveSlot> array = control.saves.getSaveSlots();
         array.sort((slot, other) -> -Long.compare(slot.getTimestamp(), other.getTimestamp()));
 
-        int maxwidth = Math.max((int)(Core.graphics.getWidth() / Scl.scl(470)), 1);
+        int cols = Math.max((int)(Core.graphics.getWidth() / Scl.scl(470)), 1);
         int i = 0;
         boolean any = false;
 
         for(SaveSlot slot : array){
-            if(slot.isHidden()) continue;
+            if(slot.isHidden()
+            || (searchString != null && !Strings.stripColors(slot.getName()).toLowerCase().contains(searchString))
+            || (!hidden.isEmpty() && hidden.contains(slot.mode()))){
+                continue;
+            }
 
             any = true;
 
-            TextButton button = new TextButton("", Styles.cleart);
+            TextButton button = new TextButton("", Styles.grayt);
             button.getLabel().remove();
             button.clearChildren();
 
@@ -75,25 +118,31 @@ public class LoadDialog extends BaseDialog{
                     t.right();
                     t.defaults().size(40f);
 
-                    t.button(Icon.save, Styles.emptytogglei, () -> {
+                    t.button(Icon.save, Styles.emptyTogglei, () -> {
                         slot.setAutosave(!slot.isAutosave());
                     }).checked(slot.isAutosave()).right();
 
                     t.button(Icon.trash, Styles.emptyi, () -> {
                         ui.showConfirm("@confirm", "@save.delete.confirm", () -> {
                             slot.delete();
-                            setup();
+                            rebuild();
                         });
                     }).right();
 
                     t.button(Icon.pencil, Styles.emptyi, () -> {
                         ui.showTextInput("@save.rename", "@save.rename.text", slot.getName(), text -> {
                             slot.setName(text);
-                            setup();
+                            rebuild();
                         });
                     }).right();
 
-                    t.button(Icon.export, Styles.emptyi, () -> platform.export("save-" + slot.getName(), saveExtension, slot::exportFile)).right();
+                    t.button(Icon.export, Styles.emptyi, () -> {
+                        if(slot.hasExternalAssets() && !slot.isBeingPlayed()){
+                            ui.showInfo("@save.export.needsload");
+                        }else{
+                            FileChooser.export(slot.getName(), saveExtension, slot::exportFile);
+                        }
+                    }).right();
 
                 }).padRight(-10).growX();
             }).growX().colspan(2);
@@ -117,7 +166,7 @@ public class LoadDialog extends BaseDialog{
 
             button.table(meta -> {
                 meta.left().top();
-                meta.defaults().padBottom(-2).left().width(290f);
+                meta.defaults().padBottom(-2).left().width(280f);
                 meta.row();
                 meta.labelWrap(Core.bundle.format("save.map", color + (slot.getMap() == null ? Core.bundle.get("unknown") : slot.getMap().name())));
                 meta.row();
@@ -129,39 +178,45 @@ public class LoadDialog extends BaseDialog{
                 meta.row();
                 meta.labelWrap(color + slot.getDate());
                 meta.row();
-            }).left().growX().width(250f);
+            }).left().growX().width(260f);
 
             modifyButton(button, slot);
-
             slots.add(button).uniformX().fillX().pad(4).padRight(8f).margin(10f);
 
-            if(++i % maxwidth == 0){
+            if(++i % cols == 0){
                 slots.row();
             }
         }
 
         if(!any){
-            slots.button("@save.none", () -> {}).disabled(true).fillX().margin(20f).minWidth(340f).height(80f).pad(4f);
+            slots.add("@save.none");
         }
-
-        cont.add(pane);
     }
 
     public void addSetup(){
 
         buttons.button("@save.import", Icon.add, () -> {
-            platform.showFileChooser(true, saveExtension, file -> {
-                if(SaveIO.isSaveValid(file)){
-                    try{
-                        control.saves.importSave(file);
-                        setup();
-                    }catch(IOException e){
-                        e.printStackTrace();
-                        ui.showException("@save.import.fail", e);
+            FileChooser.open("msav").submitMulti(files -> {
+                for(Fi file : files){
+                    if(SaveIO.isSaveValid(file)){
+                        var meta = SaveIO.getMeta(file);
+
+                        if(meta.rules.sector != null){
+                            ui.showErrorMessage("@save.nocampaign");
+                        }else{
+                            try{
+                                control.saves.importSave(file);
+                            }catch(Exception e){
+                                Log.err(e);
+                                ui.showException("@save.import.fail", e);
+                            }
+                        }
+                    }else{
+                        ui.showErrorMessage("@save.import.invalid");
                     }
-                }else{
-                    ui.showErrorMessage("@save.import.invalid");
                 }
+
+                rebuild();
             });
         }).fillX().margin(10f);
     }
@@ -177,6 +232,27 @@ public class LoadDialog extends BaseDialog{
                     state.rules.editor = false;
                     state.rules.sector = null;
                     state.set(State.playing);
+
+                    var missing = state.data.getMissingAssets();
+                    if(missing.size > 0){
+                        BaseDialog d = new BaseDialog("@save.assets.missing");
+                        d.cont.add("@save.assets.missing.info").labelAlign(Align.center).expandX().wrap().colspan(2);
+                        d.cont.row();
+
+                        Collapser col = new Collapser(base -> base.pane(t -> {
+                            t.margin(14f);
+                            for(var asset : missing){
+                                t.add("[accent]" + asset.getType() + ": [lightgray]" + asset.path).left().row();
+                            }
+                        }), true);
+
+                        d.cont.button("@save.assets.missing.list", Styles.togglet, col::toggle).size(180f, 50f).checked(b -> !col.isCollapsed()).fillX().right();
+                        d.cont.button("@ok", d::hide).size(110, 50).fillX().left();
+                        d.cont.row();
+                        d.cont.add(col).colspan(2).pad(2);
+
+                        d.show();
+                    }
                 }catch(SaveException e){
                     Log.err(e);
                     logic.reset();
@@ -192,5 +268,16 @@ public class LoadDialog extends BaseDialog{
                 runLoadSave(slot);
             }
         });
+    }
+
+    @Override
+    public Dialog show(){
+        super.show();
+
+        if(Core.app.isDesktop() && searchField != null){
+            Core.scene.setKeyboardFocus(searchField);
+        }
+
+        return this;
     }
 }

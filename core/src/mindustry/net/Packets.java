@@ -2,22 +2,24 @@ package mindustry.net;
 
 import arc.*;
 import arc.struct.*;
+import arc.util.*;
 import arc.util.io.*;
 import arc.util.serialization.*;
 import mindustry.core.*;
 import mindustry.io.*;
 
+import java.io.*;
 import java.util.zip.*;
 
-/**
- * Class for storing all packets.
- */
+/** Class for storing all packets. */
 public class Packets{
 
     public enum KickReason{
         kick, clientOutdated, serverOutdated, banned, gameover(true), recentKick,
         nameInUse, idInUse, nameEmpty, customClient, serverClose, vote, typeMismatch,
         whitelist, playerLimit, serverRestarting;
+
+        public static final KickReason[] all = values();
 
         public final boolean quiet;
 
@@ -40,7 +42,9 @@ public class Packets{
     }
 
     public enum AdminAction{
-        kick, ban, trace, wave
+        kick, ban, trace, wave, switchTeam;
+
+        public static final AdminAction[] all = values();
     }
 
     /** Generic client connection event. */
@@ -67,6 +71,22 @@ public class Packets{
 
     }
 
+    public static class TextureStream extends Streamable{
+
+    }
+
+    public static class AssetRequirementStream extends Streamable{
+
+    }
+
+    public static class AssetStream extends Streamable{
+
+        @Override
+        public boolean incremental(){
+            return true;
+        }
+    }
+
     /** Marks the beginning of a stream. */
     public static class StreamBegin extends Packet{
         private static int lastid;
@@ -74,6 +94,14 @@ public class Packets{
         public int id = lastid++;
         public int total;
         public byte type;
+
+        //only used when handling on the client (not sent)
+        public @Nullable transient InputStream incrementalStream;
+
+        @Override
+        public boolean allow(boolean server){
+            return !server;
+        }
 
         @Override
         public void write(Writes buffer){
@@ -93,6 +121,11 @@ public class Packets{
     public static class StreamChunk extends Packet{
         public int id;
         public byte[] data;
+
+        @Override
+        public boolean allow(boolean server){
+            return !server;
+        }
 
         @Override
         public void write(Writes buffer){
@@ -154,6 +187,11 @@ public class Packets{
             for(int i = 0; i < totalMods; i++){
                 mods.add(TypeIO.readString(buffer));
             }
+        }
+
+        @Override
+        public int getPriority(){
+            return priorityHigh;
         }
     }
 }

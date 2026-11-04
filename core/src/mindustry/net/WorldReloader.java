@@ -32,7 +32,9 @@ public class WorldReloader{
 
             Call.worldDataBegin();
         }else{
-            net.reset();
+            if(net.client()){
+                net.reset();
+            }
             logic.reset();
         }
 
@@ -52,7 +54,7 @@ public class WorldReloader{
                 if(state.rules.pvp){
                     p.team(netServer.assignTeam(p, new SeqIterable<>(players)));
                 }
-                netServer.sendWorldData(p);
+                netServer.sendWorldAndAssets(p);
             }
         }
     }

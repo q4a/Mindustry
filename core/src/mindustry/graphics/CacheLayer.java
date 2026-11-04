@@ -1,8 +1,8 @@
 package mindustry.graphics;
 
-import arc.*;
 import arc.graphics.*;
 import arc.graphics.gl.*;
+import arc.math.*;
 import arc.util.*;
 
 import static mindustry.Vars.*;
@@ -10,14 +10,24 @@ import static mindustry.Vars.*;
 public class CacheLayer{
     public static CacheLayer
 
-    water, mud, tar, slag, space, normal, walls;
+    water, mud, cryofluid, tar, slag, arkycite,
+    space, normal, walls;
 
     public static CacheLayer[] all = {};
 
     public int id;
+    public boolean liquid;
 
-    /** Register a new CacheLayer. */
+    /** Registers cache layers that will render before the 'normal' layer. */
     public static void add(CacheLayer... layers){
+        for(var layer : layers){
+            //7 = 'normal' index
+            add(7, layer);
+        }
+    }
+
+    /** Register CacheLayers at the end of the array. This will render over "normal" tiles. This is likely not the method you want to use. */
+    public static void addLast(CacheLayer... layers){
         int newSize = all.length + layers.length;
         var prev = all;
         //reallocate the array and copy everything over; performance matters very little here anyway
@@ -30,14 +40,33 @@ public class CacheLayer{
         }
     }
 
+    /** Adds a cache layer at a certain position. All layers >= this index are shifted upwards.*/
+    public static void add(int index, CacheLayer layer){
+        index = Mathf.clamp(index, 0, all.length - 1);
+
+        var prev = all;
+        all = new CacheLayer[all.length + 1];
+
+        System.arraycopy(prev, 0, all, 0, index);
+        System.arraycopy(prev, index, all, index + 1, prev.length - index);
+
+        all[index] = layer;
+
+        for(int i = 0; i < all.length; i++){
+            all[i].id = i;
+        }
+    }
+
     /** Loads default cache layers. */
     public static void init(){
-        add(
+        addLast(
             water = new ShaderLayer(Shaders.water),
             mud = new ShaderLayer(Shaders.mud),
             tar = new ShaderLayer(Shaders.tar),
             slag = new ShaderLayer(Shaders.slag),
-            space = new ShaderLayer(Shaders.space),
+            arkycite = new ShaderLayer(Shaders.arkycite),
+            cryofluid = new ShaderLayer(Shaders.cryofluid),
+            space = new ShaderLayer(Shaders.space, false),
             normal = new CacheLayer(),
             walls = new CacheLayer()
         );
@@ -57,30 +86,29 @@ public class CacheLayer{
         public @Nullable Shader shader;
 
         public ShaderLayer(Shader shader){
-            //shader will be null on headless backend, but that's ok
+            this(shader, true);
+        }
+
+        public ShaderLayer(@Nullable Shader shader, boolean liquid){
+            this.liquid = liquid;
             this.shader = shader;
         }
 
         @Override
         public void begin(){
-            if(!Core.settings.getBool("animatedwater")) return;
+            if(!renderer.animateWater) return;
 
-            renderer.blocks.floor.endc();
-            renderer.effectBuffer.begin();
-            Core.graphics.clear(Color.clear);
-            renderer.blocks.floor.beginc();
+            renderer.effectBuffer.begin(Color.clear);
+            renderer.blocks.floor.beginDraw();
         }
 
         @Override
         public void end(){
-            if(!Core.settings.getBool("animatedwater")) return;
+            if(!renderer.animateWater) return;
 
-            renderer.blocks.floor.endc();
             renderer.effectBuffer.end();
-
             renderer.effectBuffer.blit(shader);
-
-            renderer.blocks.floor.beginc();
+            renderer.blocks.floor.beginDraw();
         }
     }
 }

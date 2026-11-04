@@ -6,26 +6,29 @@ import arc.files.*;
 import arc.graphics.*;
 import arc.struct.*;
 import arc.util.*;
-import arc.util.async.*;
 import mindustry.*;
+import mindustry.content.*;
 import mindustry.core.GameState.*;
 import mindustry.game.EventType.*;
 import mindustry.io.*;
 import mindustry.io.SaveIO.*;
 import mindustry.maps.Map;
 import mindustry.type.*;
+import mindustry.world.*;
 
 import java.io.*;
 import java.text.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 import static mindustry.Vars.*;
 
 public class Saves{
+    private static final DateFormat dateFormat = SimpleDateFormat.getDateTimeInstance();
+
     Seq<SaveSlot> saves = new Seq<>();
     @Nullable SaveSlot current;
     private @Nullable SaveSlot lastSectorSave;
-    AsyncExecutor previewExecutor = new AsyncExecutor(1);
     private boolean saving;
     private float time;
 
@@ -44,26 +47,148 @@ public class Saves{
         });
     }
 
+    private void clearOldMegabaseSectors(){
+        IntSet serpuloRemoval = IntSet.with(27, 245, 244, 243, 242, 247, 246, 237, 150, 157, 138, 251, 103);
+
+        //clear old megabase sectors from the beta period
+        saves.removeAll(s -> {
+            if(s.getSector() != null && s.getSector().planet == Planets.serpulo && serpuloRemoval.contains(s.getSector().id) && s.meta.build < 157 && s.meta.build > 146){
+                s.getSector().clearInfo();
+                s.file.delete();
+                return true;
+            }
+            return false;
+        });
+    }
+
     public void load(){
         saves.clear();
 
-        for(Fi file : saveDirectory.list()){
+        //read saves in parallel
+        Seq<Future<SaveSlot>> futures = new Seq<>();
+
+        saveDirectory.walk(file -> {
             if(!file.name().contains("backup") && SaveIO.isSaveValid(file)){
-                SaveSlot slot = new SaveSlot(file);
-                saves.add(slot);
-                slot.meta = SaveIO.getMeta(file);
+                futures.add(mainExecutor.submit(() -> {
+                    SaveSlot slot = new SaveSlot(file);
+                    slot.meta = SaveIO.getMeta(file);
+                    return slot;
+                }));
+            }
+        });
+
+        for(var future : futures){
+            try{
+                saves.add(future.get());
+            }catch(Exception e){
+                Log.err(e);
             }
         }
 
+        clearOldMegabaseSectors();
+
         lastSectorSave = saves.find(s -> s.isSector() && s.getName().equals(Core.settings.getString("last-sector-save", "<none>")));
+
+        class Remap{
+            //file in the temp folder
+            Fi sourceFile;
+            //slot of source sector to move file for
+            SaveSlot slot;
+            Sector sourceSector;
+            //sector info from source sector to move into
+            SectorInfo sourceInfo;
+
+            //file to copy to
+            Fi destFile;
+            //destination sector to move to
+            Sector destSector;
+
+            Remap(SaveSlot slot, Fi sourceFile, Sector sourceSector, SectorInfo sourceInfo, Fi destFile, Sector destSector){
+                this.slot = slot;
+                this.sourceFile = sourceFile;
+                this.sourceSector = sourceSector;
+                this.sourceInfo = sourceInfo;
+                this.destFile = destFile;
+                this.destSector = destSector;
+            }
+        }
+
+        Seq<Remap> remaps = new Seq<>();
+        ObjectSet<Sector> remapped = new ObjectSet<>();
 
         //automatically assign sector save slots
         for(SaveSlot slot : saves){
             if(slot.getSector() != null){
-                if(slot.getSector().save != null){
-                    Log.warn("Sector @ has two corresponding saves: @ and @", slot.getSector(), slot.getSector().save.file, slot.file);
+                Sector sector = slot.getSector();
+
+                String name = slot.meta.tags.get("sectorPreset");
+                Sector remapTarget = null;
+
+                if(name != null){
+                    if(!name.isEmpty()){ //if this save had a preset defined...
+                        SectorPreset preset = content.sector(name);
+                        //...place it in the right sector according to its preset
+                        if(preset != null && preset.sector != sector && preset.requireUnlock){
+                            remapTarget = preset.sector;
+                        }
+                    }
+                }else{ //there was no sector preset in the meta at all, which means this is a legacy save that may need mapping
+                    SectorPreset target = content.sectors().find(s -> s.planet == sector.planet && s.originalPosition == sector.id);
+                    if(target != null && target.sector != sector && target.requireUnlock){ //there is indeed a sector preset that used to have this ID, and it needs remapping!
+                        remapTarget = target.sector;
+                    }
                 }
-                slot.getSector().save = slot;
+
+                if(remapTarget != null){
+                    //if the file name matches the destination of the remap, assume it has already been remapped, and skip the file movement procedure
+                    if(!slot.file.equals(getSectorFile(remapTarget))){
+                        Log.info("Remapping sector: @ -> @ (@)", sector.id, remapTarget.id, remapTarget.preset);
+
+                        try{
+                            SectorInfo info = Core.settings.getJson(sector.planet.name + "-s-" + sector.id + "-info", SectorInfo.class, SectorInfo::new);
+                            Fi tmpRemapFile = saveDirectory.child("remap_" + sector.planet.name + "_" + sector.id + "." + saveExtension);
+                            slot.file.moveTo(tmpRemapFile);
+
+                            remaps.add(new Remap(slot, tmpRemapFile, sector, info, getSectorFile(remapTarget), remapTarget));
+                            remapped.add(remapTarget);
+                        }catch(Exception e){
+                            Log.err("Failed to move sector files when remapping: " + sector.id + " -> " + remapTarget.id, e);
+                        }
+                    }
+
+                    remapTarget.save = slot;
+                    slot.meta.rules.sector = remapTarget;
+
+                }else{
+                    if(sector.save != null){
+                        Log.warn("Sector @ has two corresponding saves: @ and @", sector, sector.save.file, slot.file);
+                    }
+                    sector.save = slot;
+                }
+            }
+        }
+
+        //process remaps later to allow swaps of sectors
+        for(var remap : remaps){
+            if(remap.sourceSector.planet == Planets.serpulo) Vars.hadSerpuloRemaps = true;
+            var remapTarget = remap.destSector;
+
+            //overwrite the target sector's info with the save's info
+            Core.settings.putJson(remapTarget.planet.name + "-s-" + remapTarget.id + "-info", remap.sourceInfo);
+            remapTarget.loadInfo();
+
+            remapTarget.save = remap.slot;
+            try{
+                //move file from tmp directory back into the correct location
+                remap.sourceFile.moveTo(remap.destFile);
+                remap.slot.file = remap.destFile;
+            }catch(Exception e){
+                Log.err("Failed to move back sector files when remapping: " + remap.sourceSector.id + " -> " + remapTarget.id, e);
+            }
+
+            //clear the info, assuming it wasn't a sector that got mapped to
+            if(!remapped.contains(remap.sourceSector)){
+                remap.sourceSector.clearInfo();
             }
         }
     }
@@ -80,14 +205,18 @@ public class Saves{
         if(current != null && state.isGame()
         && !(state.isPaused() && Core.scene.hasDialog())){
             if(lastTimestamp != 0){
-                totalPlaytime += Time.timeSinceMillis(lastTimestamp);
+                long change = Time.timeSinceMillis(lastTimestamp);
+                totalPlaytime += change;
+                if(state.isCampaign()){
+                    state.getPlanet().stats().playtime += change;
+                }
             }
             lastTimestamp = Time.millis();
         }
 
         if(state.isGame() && !state.gameOver && current != null && current.isAutosave()){
             time += Time.delta;
-            if(time > Core.settings.getInt("saveinterval") * 60){
+            if(time > Core.settings.getInt("saveinterval") * 60 && !Vars.disableSave){
                 saving = true;
 
                 try{
@@ -145,6 +274,7 @@ public class Saves{
         SaveSlot slot = new SaveSlot(getNextSlotFile());
         slot.importFile(file);
         slot.setName(file.nameWithoutExtension());
+
         saves.add(slot);
         slot.meta = SaveIO.getMeta(slot.file);
         current = slot;
@@ -173,7 +303,7 @@ public class Saves{
     }
 
     public class SaveSlot{
-        public final Fi file;
+        public Fi file;
         boolean requestedPreview;
         public SaveMeta meta;
 
@@ -182,8 +312,12 @@ public class Saves{
         }
 
         public void load() throws SaveException{
+            load(world.context);
+        }
+
+        public void load(WorldContext context) throws SaveException{
             try{
-                SaveIO.load(file);
+                SaveIO.load(file, context);
                 meta = SaveIO.getMeta(file);
                 current = this;
                 totalPlaytime = meta.timePlayed;
@@ -194,9 +328,7 @@ public class Saves{
         }
 
         public void save(){
-            long time = totalPlaytime;
             long prev = totalPlaytime;
-            totalPlaytime = time;
 
             SaveIO.save(file);
             meta = SaveIO.getMeta(file);
@@ -212,7 +344,7 @@ public class Saves{
             if(Core.assets.isLoaded(loadPreviewFile().path())){
                 Core.assets.unload(loadPreviewFile().path());
             }
-            previewExecutor.submit(() -> {
+            mainExecutor.submit(() -> {
                 try{
                     previewFile().writePng(renderer.minimap.getPixmap());
                     requestedPreview = false;
@@ -259,7 +391,7 @@ public class Saves{
         }
 
         public String getDate(){
-            return SimpleDateFormat.getDateTimeInstance().format(new Date(meta.timestamp));
+            return dateFormat.format(new Date(meta.timestamp));
         }
 
         public Map getMap(){
@@ -289,7 +421,8 @@ public class Saves{
             return meta.mods;
         }
 
-        public Sector getSector(){
+        public @Nullable Sector getSector(){
+            //TODO remap sectors
             return meta == null || meta.rules == null ? null : meta.rules.sector;
         }
 
@@ -317,9 +450,21 @@ public class Saves{
             Core.settings.put("save-" + index() + "-autosave", save);
         }
 
+        public boolean isBeingPlayed(){
+            return getCurrent() == this;
+        }
+
+        public boolean hasExternalAssets(){
+            return meta.tags.getBool("hasExternalAssets");
+        }
+
         public void importFile(Fi from) throws IOException{
             try{
                 from.copyTo(file);
+                if(previewFile().exists()){
+                    requestedPreview = false;
+                    previewFile().delete();
+                }
             }catch(Exception e){
                 throw new IOException(e);
             }
@@ -327,7 +472,13 @@ public class Saves{
 
         public void exportFile(Fi to) throws IOException{
             try{
-                file.copyTo(to);
+                if(isBeingPlayed() && hasExternalAssets()){
+                    SaveIO.write(to, new SaveOptions(){{
+                        embedAssets = true;
+                    }});
+                }else{
+                    file.copyTo(to);
+                }
             }catch(Exception e){
                 throw new IOException(e);
             }

@@ -2,13 +2,19 @@ package mindustry.ctype;
 
 import arc.*;
 import arc.func.*;
+import arc.graphics.*;
 import arc.graphics.g2d.*;
+import arc.graphics.g2d.TextureAtlas.*;
+import arc.scene.ui.layout.*;
+import arc.struct.*;
 import arc.util.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
 import mindustry.content.TechTree.*;
 import mindustry.game.EventType.*;
 import mindustry.graphics.*;
+import mindustry.graphics.MultiPacker.*;
+import mindustry.mod.*;
 import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.world.meta.*;
@@ -18,22 +24,64 @@ import static mindustry.Vars.*;
 /** Base interface for an unlockable content type. */
 public abstract class UnlockableContent extends MappableContent{
     /** Stat storage for this content. Initialized on demand. */
+    @NoPatch
     public Stats stats = new Stats();
     /** Localized, formal name. Never null. Set to internal name if not found in bundle. */
     public String localizedName;
     /** Localized description & details. May be null. */
-    public @Nullable String description, details;
+    public @Nullable String description, details, credit;
     /** Whether this content is always unlocked in the tech tree. */
     public boolean alwaysUnlocked = false;
     /** Whether to show the description in the research dialog preview. */
     public boolean inlineDescription = true;
-    /** Special logic icon ID. */
-    public int iconId = 0;
+    /** Whether details are hidden in custom games if this hasn't been unlocked in campaign mode. */
+    public boolean hideDetails = true;
+    /** Whether this is hidden from the Core Database. */
+    public boolean hideDatabase = false;
+    /** If false, all icon generation is disabled for this content; createIcons is not called. */
+    public boolean generateIcons = true;
+    /** How big the content appears in certain selection menus */
+    public float selectionSize = 24f;
     /** Icon of the content to use in UI. */
     public TextureRegion uiIcon;
     /** Icon of the full content. Unscaled.*/
     public TextureRegion fullIcon;
-    /** Unlock state. Loaded from settings. Do not modify outside of the constructor. */
+    /** Override for the full icon. Useful for mod content with duplicate icons. Overrides any other full icon.*/
+    public String fullOverride = "";
+    /** If true, this content will appear in all database tabs. */
+    public boolean allDatabaseTabs = false;
+    /**
+     * Planets that this content is made for. If empty, a planet is decided based on item requirements.
+     * Currently, this is only meaningful for blocks.
+     * */
+    public ObjectSet<Planet> shownPlanets = new ObjectSet<>();
+    /**
+     * Content - usually a planet - that dictates which database tab(s) this content will appear in.
+     * If nothing is defined, it will use the values in shownPlanets.
+     * If shownPlanets is also empty, it will use Serpulo as the "default" tab.
+     * */
+    public ObjectSet<UnlockableContent> databaseTabs = new ObjectSet<>();
+    /**
+     * Content category. Defines the primary category of content classification in core database.
+     * For example, "block", "liquid", "unit".
+     * Uses getContentType().name() as a fallback when the value is null or empty.
+     * */
+    public @Nullable String databaseCategory;
+    /**
+     * Category tags. Secondary category of content classification in core database.
+     * For example, "turret", "wall" under databaseCategory "block", "core-unit", "ground-unit" under databaseCategory "units".
+     * Uses "default" as a fallback when the value is null or empty. When using "default", no extra tag label are displayed.
+     * */
+    public @Nullable String databaseTag;
+
+    /** The tech tree node for this content, if applicable. Null if not part of a tech tree. */
+    @NoPatch
+    public @Nullable TechNode techNode;
+    /** Tech nodes for all trees that this content is part of. */
+    @NoPatch
+    public Seq<TechNode> techNodes = new Seq<>();
+    /** Unlock state. Loaded from settings. Do not modify outside the constructor. */
+    @NoPatch
     protected boolean unlocked;
 
     public UnlockableContent(String name){
@@ -42,46 +90,76 @@ public abstract class UnlockableContent extends MappableContent{
         this.localizedName = Core.bundle.get(getContentType() + "." + this.name + ".name", this.name);
         this.description = Core.bundle.getOrNull(getContentType() + "." + this.name + ".description");
         this.details = Core.bundle.getOrNull(getContentType() + "." + this.name + ".details");
+        this.credit = Core.bundle.getOrNull(getContentType() + "." + this.name + ".credit");
         this.unlocked = Core.settings != null && Core.settings.getBool(this.name + "-unlocked", false);
+    }
+
+    @Override
+    public void postInit(){
+        super.postInit();
+
+        if(databaseCategory == null || databaseCategory.isEmpty()) databaseCategory = getContentType().name();
+        if(databaseTag == null || databaseTag.isEmpty()) databaseTag = "default";
+
+        databaseTabs.addAll(shownPlanets);
     }
 
     @Override
     public void loadIcon(){
         fullIcon =
+            Core.atlas.find(fullOverride == null ? "" : fullOverride,
             Core.atlas.find(getContentType().name() + "-" + name + "-full",
             Core.atlas.find(name + "-full",
             Core.atlas.find(name,
             Core.atlas.find(getContentType().name() + "-" + name,
-            Core.atlas.find(name + "1")))));
+            Core.atlas.find(name + "1"))))));
 
         uiIcon = Core.atlas.find(getContentType().name() + "-" + name + "-ui", fullIcon);
     }
 
-    /** @return the tech node for this content. may be null. */
-    public @Nullable TechNode node(){
-        return TechTree.get(this);
+    @Override
+    public void afterPatch(){
+        super.afterPatch();
+
+        //reset stats
+        stats = new Stats();
     }
 
-    /** Use fullIcon / uiIcon instead! This will be removed. */
-    @Deprecated
-    public TextureRegion icon(Cicon icon){
-        return icon == Cicon.full ? fullIcon : uiIcon;
+    public boolean isBanned(){
+        return false;
+    }
+
+    public boolean isOnPlanet(@Nullable Planet planet){
+        return planet == null || planet == Planets.sun || shownPlanets.isEmpty() || shownPlanets.contains(planet);
+    }
+
+    public int getLogicId(){
+        return logicVars.lookupLogicId(this);
     }
 
     public String displayDescription(){
-        return minfo.mod == null ? description : description + "\n" + Core.bundle.format("mod.display", minfo.mod.meta.displayName());
+        return minfo.mod == null || isPatchContent() ? description : description + "\n" + Core.bundle.format("mod.display", minfo.mod.meta.displayName);
     }
 
-    /** Checks stat initialization state. Call before displaying stats. */
+    /** @deprecated just call computeStats() every time, there's no reason to cache it. This will be removed in v9. */
+    @Deprecated
     public void checkStats(){
-        if(!stats.intialized){
-            setStats();
-            stats.intialized = true;
-        }
+        computeStats();
     }
 
-    /** Initializes stats on demand. Should only be called once. Only called before something is displayed. */
+    /** Initializes stats on demand. Called every time the block stats are shown. */
     public void setStats(){
+    }
+
+    public Stats computeStats(){
+        this.stats = new Stats();
+        setStats();
+        return this.stats;
+    }
+
+    /** Display any extra info after details. */
+    public void displayExtra(Table table){
+
     }
 
     /**
@@ -93,6 +171,40 @@ public abstract class UnlockableContent extends MappableContent{
 
     }
 
+    protected void makeOutline(PageType page, MultiPacker packer, TextureRegion region, boolean makeNew, Color outlineColor, int outlineRadius){
+        makeOutline(page, packer, region, makeNew, outlineColor, outlineRadius, 0);
+    }
+
+    protected void makeOutline(PageType page, MultiPacker packer, TextureRegion region, boolean makeNew, Color outlineColor, int outlineRadius, int padding){
+        if(region instanceof AtlasRegion at && region.found()){
+            String name = at.name;
+            if(!makeNew || !packer.has(name + "-outline")){
+                String regName = name + (makeNew ? "-outline" : "");
+                if(packer.registerOutlined(regName)){
+                    PixmapRegion base = packer.get(region);
+                    var result = Pixmaps.outline(base, outlineColor, outlineRadius, padding);
+                    Drawf.checkBleed(result);
+                    packer.add(page, regName, result);
+                    result.dispose();
+                }
+            }
+        }
+    }
+
+    protected void makeOutline(MultiPacker packer, TextureRegion region, String name, Color outlineColor, int outlineRadius){
+        if(region.found() && packer.registerOutlined(name)){
+            PixmapRegion base = packer.get(region);
+            var result = Pixmaps.outline(base, outlineColor, outlineRadius);
+            Drawf.checkBleed(result);
+            packer.add(PageType.main, name, result);
+            result.dispose();
+        }
+    }
+
+    protected void makeOutline(MultiPacker packer, TextureRegion region, String name, Color outlineColor){
+        makeOutline(packer, region, name, outlineColor, 4);
+    }
+
     /** @return items needed to research this content */
     public ItemStack[] researchRequirements(){
         return ItemStack.empty;
@@ -101,6 +213,11 @@ public abstract class UnlockableContent extends MappableContent{
     public String emoji(){
         return Fonts.getUnicodeStr(name);
     }
+
+    public int emojiChar(){
+        return Fonts.getUnicode(name);
+    }
+
 
     public boolean hasEmoji(){
         return Fonts.hasUnicodeStr(name);
@@ -149,9 +266,26 @@ public abstract class UnlockableContent extends MappableContent{
         }
     }
 
+    public boolean unlockedNowHost(){
+        return !state.isCampaign() || unlockedHost();
+    }
+
+    /** @return in multiplayer, whether this is unlocked for the host player, otherwise, whether it is unlocked for the local player (same as unlocked()) */
+    public boolean unlockedHost(){
+        return net != null && net.client() ?
+            alwaysUnlocked || state.rules.researched.contains(this) :
+            unlocked || alwaysUnlocked;
+    }
+
+    /** @return whether this content is unlocked, or the player is in a custom (non-campaign) game. */
+    public boolean unlockedNow(){
+        return unlocked() || !state.isCampaign();
+    }
+
     public boolean unlocked(){
-        if(net != null && net.client()) return alwaysUnlocked || state.rules.researched.contains(name);
-        return unlocked || alwaysUnlocked;
+        return net != null && net.client() ?
+            alwaysUnlocked || unlocked || state.rules.researched.contains(this) :
+            unlocked || alwaysUnlocked;
     }
 
     /** Locks this content again. */
@@ -160,11 +294,6 @@ public abstract class UnlockableContent extends MappableContent{
             unlocked = false;
             Core.settings.put(name + "-unlocked", false);
         }
-    }
-
-    /** @return whether this content is unlocked, or the player is in a custom (non-campaign) game. */
-    public boolean unlockedNow(){
-        return unlocked() || !state.isCampaign();
     }
 
     public boolean locked(){

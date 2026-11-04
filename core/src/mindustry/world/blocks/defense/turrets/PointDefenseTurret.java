@@ -14,18 +14,20 @@ import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.world.meta.*;
 
+import static mindustry.Vars.*;
+
 public class PointDefenseTurret extends ReloadTurret{
     public final int timerTarget = timers++;
     public float retargetTime = 5f;
 
-    public @Load("block-@size") TextureRegion baseRegion;
+    public @Load(value = "@-base", fallback = "block-@size") TextureRegion baseRegion;
 
     public Color color = Color.white;
     public Effect beamEffect = Fx.pointBeam;
     public Effect hitEffect = Fx.pointHit;
     public Effect shootEffect = Fx.sparkShoot;
 
-    public Sound shootSound = Sounds.lasershoot;
+    public Sound shootSound = Sounds.shootSegment;
 
     public float shootCone = 5f;
     public float bulletDamage = 10f;
@@ -35,11 +37,9 @@ public class PointDefenseTurret extends ReloadTurret{
         super(name);
 
         rotateSpeed = 20f;
-        reloadTime = 30f;
+        reload = 30f;
 
         coolantMultiplier = 2f;
-        //disabled due to version mismatch problems
-        acceptCoolant = false;
     }
 
     @Override
@@ -51,7 +51,8 @@ public class PointDefenseTurret extends ReloadTurret{
     public void setStats(){
         super.setStats();
 
-        stats.add(Stat.reload, 60f / reloadTime, StatUnit.none);
+        stats.add(Stat.reload, 60f / reload, StatUnit.perSecond);
+        stats.add(Stat.damage, bulletDamage, StatUnit.none);
     }
 
     public class PointDefenseBuild extends ReloadTurretBuild{
@@ -70,7 +71,7 @@ public class PointDefenseTurret extends ReloadTurret{
                 target = null;
             }
 
-            if(acceptCoolant){
+            if(coolant != null && reloadCounter < reload){
                 updateCooling();
             }
 
@@ -78,12 +79,13 @@ public class PointDefenseTurret extends ReloadTurret{
             if(target != null && target.within(this, range) && target.team != team && target.type() != null && target.type().hittable){
                 float dest = angleTo(target);
                 rotation = Angles.moveToward(rotation, dest, rotateSpeed * edelta());
-                reload += edelta();
+                reloadCounter += edelta();
 
                 //shoot when possible
-                if(Angles.within(rotation, dest, shootCone) && reload >= reloadTime){
-                    if(target.damage() > bulletDamage){
-                        target.damage(target.damage() - bulletDamage);
+                if(Angles.within(rotation, dest, shootCone) && reloadCounter >= reload){
+                    float realDamage = bulletDamage * state.rules.blockDamage(team);
+                    if(target.damage() > realDamage){
+                        target.damage(target.damage() - realDamage);
                     }else{
                         target.remove();
                     }
@@ -94,9 +96,14 @@ public class PointDefenseTurret extends ReloadTurret{
                     shootEffect.at(x + Tmp.v1.x, y + Tmp.v1.y, rotation, color);
                     hitEffect.at(target.x, target.y, color);
                     shootSound.at(x + Tmp.v1.x, y + Tmp.v1.y, Mathf.random(0.9f, 1.1f));
-                    reload = 0;
+                    reloadCounter = 0;
                 }
             }
+        }
+
+        @Override
+        public boolean shouldConsume(){
+            return super.shouldConsume() && target != null;
         }
 
         @Override

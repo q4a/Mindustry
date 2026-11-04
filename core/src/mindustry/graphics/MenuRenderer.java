@@ -11,9 +11,9 @@ import arc.struct.*;
 import arc.util.*;
 import arc.util.noise.*;
 import mindustry.content.*;
+import mindustry.game.*;
 import mindustry.type.*;
 import mindustry.world.*;
-import mindustry.world.blocks.environment.*;
 
 import static mindustry.Vars.*;
 
@@ -29,7 +29,8 @@ public class MenuRenderer implements Disposable{
     private float time = 0f;
     private float flyerRot = 45f;
     private int flyers = Mathf.chance(0.2) ? Mathf.random(35) : Mathf.random(15);
-    private UnitType flyerType = content.units().select(u -> u.hitSize <= 20f && u.flying && u.region.found()).random();
+    //no longer random or "dynamic", mod units in the menu look jarring, and it's not worth the configuration effort
+    private UnitType flyerType = Seq.with(UnitTypes.flare, UnitTypes.horizon, UnitTypes.zenith, UnitTypes.mono, UnitTypes.poly, UnitTypes.mega, UnitTypes.alpha, UnitTypes.beta, UnitTypes.gamma).random();
 
     public MenuRenderer(){
         Time.mark();
@@ -39,28 +40,33 @@ public class MenuRenderer implements Disposable{
     }
 
     private void generate(){
-        world.beginMapLoad();
+        //suppress tile change events.
+        world.setGenerating(true);
+
         Tiles tiles = world.resize(width, height);
-        Seq<Block> ores = content.blocks().select(b -> b instanceof OreBlock && !(b instanceof WallOreBlock));
+        //only uses base game ores now, mod ones usually contrast too much with the floor
+        Seq<Block> ores = Seq.with(Blocks.oreCopper, Blocks.oreLead, Blocks.oreScrap, Blocks.oreCoal, Blocks.oreTitanium, Blocks.oreThorium);
         shadows = new FrameBuffer(width, height);
         int offset = Mathf.random(100000);
         int s1 = offset, s2 = offset + 1, s3 = offset + 2;
-        Block[] selected = Structs.select(
-            new Block[]{Blocks.sand, Blocks.sandWall},
-            new Block[]{Blocks.shale, Blocks.shaleWall},
-            new Block[]{Blocks.ice, Blocks.iceWall},
-            new Block[]{Blocks.sand, Blocks.sandWall},
-            new Block[]{Blocks.shale, Blocks.shaleWall},
-            new Block[]{Blocks.ice, Blocks.iceWall},
-            new Block[]{Blocks.moss, Blocks.sporePine}
+        Block[] selected = Structs.random(
+        new Block[]{Blocks.sand, Blocks.sandWall},
+        new Block[]{Blocks.shale, Blocks.shaleWall},
+        new Block[]{Blocks.ice, Blocks.iceWall},
+        new Block[]{Blocks.sand, Blocks.sandWall},
+        new Block[]{Blocks.shale, Blocks.shaleWall},
+        new Block[]{Blocks.ice, Blocks.iceWall},
+        new Block[]{Blocks.moss, Blocks.sporePine},
+        new Block[]{Blocks.dirt, Blocks.dirtWall},
+        new Block[]{Blocks.dacite, Blocks.daciteWall}
         );
-        Block[] selected2 = Structs.select(
-            new Block[]{Blocks.basalt, Blocks.duneWall},
-            new Block[]{Blocks.basalt, Blocks.duneWall},
-            new Block[]{Blocks.stone, Blocks.stoneWall},
-            new Block[]{Blocks.stone, Blocks.stoneWall},
-            new Block[]{Blocks.moss, Blocks.sporeWall},
-            new Block[]{Blocks.salt, Blocks.saltWall}
+        Block[] selected2 = Structs.random(
+        new Block[]{Blocks.basalt, Blocks.duneWall},
+        new Block[]{Blocks.basalt, Blocks.duneWall},
+        new Block[]{Blocks.stone, Blocks.stoneWall},
+        new Block[]{Blocks.stone, Blocks.stoneWall},
+        new Block[]{Blocks.moss, Blocks.sporeWall},
+        new Block[]{Blocks.salt, Blocks.saltWall}
         );
 
         Block ore1 = ores.random();
@@ -157,7 +163,8 @@ public class MenuRenderer implements Disposable{
             }
         }
 
-        world.endMapLoad();
+        //don't fire a world load event, it just causes lag and confusion
+        world.setGenerating(false);
     }
 
     private void cache(){
@@ -233,35 +240,18 @@ public class MenuRenderer implements Disposable{
     }
 
     private void drawFlyers(){
-        Draw.color(0f, 0f, 0f, 0.4f);
-
-        TextureRegion icon = flyerType.fullIcon;
-
-        float size = Math.max(icon.width, icon.height) * Draw.scl * 1.6f;
-
-        flyers((x, y) -> {
-            Draw.rect(icon, x - 12f, y - 13f, flyerRot - 90);
-        });
+        flyerType.sample.elevation = 1f;
+        flyerType.sample.team = Team.sharded;
+        flyerType.sample.rotation = flyerRot;
+        flyerType.sample.setType(flyerType);
+        flyerType.sample.heal();
 
         flyers((x, y) -> {
-            Draw.rect("circle-shadow", x, y, size, size);
+            flyerType.sample.set(x, y);
+            flyerType.drawShadow(flyerType.sample);
+            flyerType.draw(flyerType.sample);
         });
-        Draw.color();
 
-        flyers((x, y) -> {
-            float engineOffset = flyerType.engineOffset, engineSize = flyerType.engineSize, rotation = flyerRot;
-
-            Draw.color(Pal.engine);
-            Fill.circle(x + Angles.trnsx(rotation + 180, engineOffset), y + Angles.trnsy(rotation + 180, engineOffset),
-            engineSize + Mathf.absin(Time.time, 2f, engineSize / 4f));
-
-            Draw.color(Color.white);
-            Fill.circle(x + Angles.trnsx(rotation + 180, engineOffset - 1f), y + Angles.trnsy(rotation + 180, engineOffset - 1f),
-            (engineSize + Mathf.absin(Time.time, 2f, engineSize / 4f)) / 2f);
-            Draw.color();
-
-            Draw.rect(icon, x, y, flyerRot - 90);
-        });
     }
 
     private void flyers(Floatc2 cons){

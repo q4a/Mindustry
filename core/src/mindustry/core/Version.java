@@ -12,12 +12,18 @@ public class Version{
     public static String type = "unknown";
     /** Build modifier, e.g. 'alpha' or 'release' */
     public static String modifier = "unknown";
+    /** Git commit hash (short) */
+    public static String commitHash = "unknown";
+    /** Date that this version was built. */
+    public static String buildDate = "unknown";
     /** Number specifying the major version, e.g. '4' */
     public static int number;
     /** Build number, e.g. '43'. set to '-1' for custom builds. */
     public static int build = 0;
     /** Revision number. Used for hotfixes. Does not affect server compatibility. */
     public static int revision = 0;
+    /** Whether the Steam version of the game is requested. This is different from Vars.steam (Steam initialization can fail) */
+    public static boolean isSteam = false;
     /** Whether version loading is enabled. */
     public static boolean enabled = true;
 
@@ -32,6 +38,9 @@ public class Version{
         type = map.get("type");
         number = Integer.parseInt(map.get("number", "4"));
         modifier = map.get("modifier");
+        commitHash = map.get("commitHash", "unknown");
+        buildDate = map.get("buildDate", "unknown");
+        isSteam = modifier.contains("steam");
         if(map.get("build").contains(".")){
             String[] split = map.get("build").split("\\.");
             try{
@@ -46,8 +55,13 @@ public class Version{
         }
     }
 
-    /** @return whether the version is greater than the specified version string, e.g. "120.1"*/
+    /** @return whether the current game version is greater than the specified version string, e.g. "120.1"*/
     public static boolean isAtLeast(String str){
+        return isAtLeast(build, revision, str);
+    }
+
+    /** @return whether the version numbers are greater than the specified version string, e.g. "120.1"*/
+    public static boolean isAtLeast(int build, int revision, String str){
         if(build <= 0 || str == null || str.isEmpty()) return true;
 
         int dot = str.indexOf('.');
@@ -68,6 +82,6 @@ public class Version{
         if(build == -1){
             return "custom build";
         }
-        return (type.equals("official") ? modifier : type) + " build " + build + (revision == 0 ? "" : "." + revision);
+        return (type.equals("official") ? modifier : type) + " build " + build + (revision == 0 ? "" : "." + revision) + (commitHash.equals("unknown") ? "" : " (" + commitHash + ")");
     }
 }

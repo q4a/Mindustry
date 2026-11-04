@@ -17,7 +17,7 @@ import static mindustry.Vars.*;
 public class Lightning{
     private static final Rand random = new Rand();
     private static final Rect rect = new Rect();
-    private static final Seq<Unitc> entities = new Seq<>();
+    private static final Seq<Unit> entities = new Seq<>();
     private static final IntSet hit = new IntSet();
     private static final int maxChain = 8;
     private static final float hitRange = 30f;
@@ -25,35 +25,40 @@ public class Lightning{
     private static int lastSeed = 0;
 
     /** Create a lighting branch at a location. Use Team.derelict to damage everyone. */
+    public static void create(BulletType bulletCreated, Team team, Color color, float damage, float x, float y, float targetAngle, int length){
+        createLightningInternal(null, bulletCreated, lastSeed++, team, color, damage, x, y, targetAngle, length);
+    }
+
+    /** Create a lighting branch at a location. Use Team.derelict to damage everyone. */
     public static void create(Team team, Color color, float damage, float x, float y, float targetAngle, int length){
-        createLightningInternal(null, lastSeed++, team, color, damage, x, y, targetAngle, length);
+        createLightningInternal(null, Bullets.damageLightning, lastSeed++, team, color, damage, x, y, targetAngle, length);
     }
 
     /** Create a lighting branch at a location. Uses bullet parameters. */
     public static void create(Bullet bullet, Color color, float damage, float x, float y, float targetAngle, int length){
-        createLightningInternal(bullet, lastSeed++, bullet.team, color, damage, x, y, targetAngle, length);
+        createLightningInternal(bullet, bullet == null || bullet.type.lightningType == null ? Bullets.damageLightning : bullet.type.lightningType, lastSeed++, bullet.team, color, damage, x, y, targetAngle, length);
     }
 
-    private static void createLightningInternal(@Nullable Bullet hitter, int seed, Team team, Color color, float damage, float x, float y, float rotation, int length){
+    private static void createLightningInternal(@Nullable Bullet hitter, BulletType hitCreate, int seed, Team team, Color color, float damage, float x, float y, float rotation, int length){
         random.setSeed(seed);
         hit.clear();
 
-        BulletType hitCreate = hitter == null || hitter.type.lightningType == null ? Bullets.damageLightning : hitter.type.lightningType;
         Seq<Vec2> lines = new Seq<>();
         bhit = false;
 
         for(int i = 0; i < length / 2; i++){
-            hitCreate.create(null, team, x, y, rotation, damage, 1f, 1f, hitter);
+            hitCreate.create(hitter == null ? null : hitter.owner, team, x, y,
+                rotation, damage * (hitter == null ? 1f : hitter.damageMultiplier()), 1f, 1f, null);
             lines.add(new Vec2(x + Mathf.range(3f), y + Mathf.range(3f)));
 
             if(lines.size > 1){
                 bhit = false;
                 Vec2 from = lines.get(lines.size - 2);
                 Vec2 to = lines.get(lines.size - 1);
-                world.raycastEach(World.toTile(from.getX()), World.toTile(from.getY()), World.toTile(to.getX()), World.toTile(to.getY()), (wx, wy) -> {
+                World.raycastEach(World.toTile(from.getX()), World.toTile(from.getY()), World.toTile(to.getX()), World.toTile(to.getY()), (wx, wy) -> {
 
                     Tile tile = world.tile(wx, wy);
-                    if(tile != null && tile.block().insulated && tile.team() != team){
+                    if(tile != null && (tile.build != null && tile.build.isInsulated()) && tile.team() != team){
                         bhit = true;
                         //snap it instead of removing
                         lines.get(lines.size - 1).set(wx * tilesize, wy * tilesize);
@@ -74,9 +79,13 @@ public class Lightning{
                 });
             }
 
-            Unitc furthest = Geometry.findFurthest(x, y, entities);
+            if(hitter != null && hitter.type.pierceCap > 0 && hit.size >= hitter.type.pierceCap){
+                break;
+            }
 
-            if(furthest != null){
+            Unit furthest = Geometry.findFurthest(x, y, entities);
+
+            if(furthest != null && furthest.within(x, y, hitRange * 2f)){
                 hit.add(furthest.id());
                 x = furthest.x();
                 y = furthest.y();

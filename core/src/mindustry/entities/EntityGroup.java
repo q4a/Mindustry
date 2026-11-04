@@ -5,6 +5,8 @@ import arc.func.*;
 import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.*;
+import arc.util.Time.*;
+import arc.util.pooling.*;
 import mindustry.gen.*;
 
 import java.util.*;
@@ -20,17 +22,32 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
     private final Seq<T> intersectArray = new Seq<>();
     private final Rect viewport = new Rect();
     private final Rect intersectRect = new Rect();
+    private final EntityIndexer indexer;
     private IntMap<T> map;
     private QuadTree tree;
     private boolean clearing;
 
     private int index;
 
+    private double fixedCounter, timeCounter;
+    private long lastTimeAccess = -1;
+    private Seq<DelayRun> timeRuns = new Seq<>();
+
     public static int nextId(){
+        if(lastId >= Integer.MAX_VALUE - 2) lastId = 0;
         return lastId++;
     }
 
+    /** Makes sure the next ID counter is higher than this number, so future entities cannot possibly use this ID. */
+    public static void checkNextId(int id){
+        lastId = Math.max(lastId, id + 1);
+    }
+
     public EntityGroup(Class<T> type, boolean spatial, boolean mapping){
+        this(type, spatial, mapping, null);
+    }
+
+    public EntityGroup(Class<T> type, boolean spatial, boolean mapping, EntityIndexer indexer){
         array = new Seq<>(false, 32, type);
 
         if(spatial){
@@ -40,6 +57,20 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
         if(mapping){
             map = new IntMap<>();
         }
+
+        this.indexer = indexer;
+    }
+
+    /** @return entities with colliding IDs, or an empty array. */
+    public Seq<T> checkIDCollisions(){
+        Seq<T> out = new Seq<>();
+        IntSet ints = new IntSet();
+        each(u -> {
+            if(!ints.add(u.id())){
+                out.add(u);
+            }
+        });
+        return out;
     }
 
     public void sort(Comparator<? super T> comp){
@@ -58,6 +89,63 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
         for(index = 0; index < array.size; index++){
             array.items[index].update();
         }
+    }
+
+    public void update(Boolf<T> filter){
+        for(index = 0; index < array.size; index++){
+            var item = array.items[index];
+            if(filter.get(item)) array.items[index].update();
+        }
+    }
+
+    /** Calls {@link #fixedUpdate(int, int)} with a maximum of 10 updates per frame. */
+    public void fixedUpdate(int targetFps){
+        fixedUpdate(targetFps, 10);
+    }
+
+    /**
+     * Updates this entity group at a fixed rate and delta time, regardless of framerate.
+     * If updates per frame exceed {@param maxUpdatesPerFrame}, they will be skipped - visually, the game will look like it is slowing down.
+     * For example, a value of 60 targetUps and 10 maxUpdatesPerFrame will mean that the game only starts slowing down below (60 / 10) = 6 FPS.
+     * */
+    public void fixedUpdate(int targetUps, int maxUpdatesPerFrame){
+        //if fixedUpdate isn't called, e.g. when the game is paused or map is reloaded, the time counter needs to 'sync' with the actual proper time
+        if(lastTimeAccess != Core.graphics.getFrameId()){
+            timeCounter = Time.getInternalTime();
+        }
+
+        double targetDelta = 1.0 / targetUps;
+        float timeDelta = (float)targetDelta * 60f;
+        float prevDelta = Time.delta;
+        double prevTime = Time.getInternalTime();
+        var oldRuns = Time.getRuns();
+
+        //since some logic (incorrectly!) relies on Time.time, it has to be passed like this across several variables.
+        Time.delta = timeDelta;
+        Time.setInternalTime(timeCounter);
+        Time.setRuns(timeRuns);
+        int updates = 0;
+
+        fixedCounter += Core.graphics.getDeltaTime();
+
+        while(fixedCounter >= targetDelta && updates++ < maxUpdatesPerFrame){
+            //this executes any pending tasks (manually reassigned), and increments internal time, which is local to this group
+            Time.update();
+            update();
+            fixedCounter -= targetDelta;
+        }
+
+        timeCounter = Time.getInternalTime();
+
+        Time.delta = prevDelta;
+        Time.setInternalTime(prevTime);
+        Time.setRuns(oldRuns);
+
+        lastTimeAccess = Core.graphics.getFrameId();
+    }
+
+    public Seq<T> copy(){
+        return copy(new Seq<>());
     }
 
     public Seq<T> copy(Seq<T> arr){
@@ -80,16 +168,17 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
     public void draw(Cons<T> cons){
         Core.camera.bounds(viewport);
 
-        each(e -> {
-            Drawc draw = (Drawc)e;
-            if(viewport.overlaps(draw.x() - draw.clipSize()/2f, draw.y() - draw.clipSize()/2f, draw.clipSize(), draw.clipSize())){
-                cons.get(e);
+        for(index = 0; index < array.size; index++){
+            Drawc draw = (Drawc)array.items[index];
+            float clip = draw.clipSize();
+            if(viewport.overlaps(draw.x() - clip/2f, draw.y() - clip/2f, clip, clip)){
+                cons.get((T)draw);
             }
-        });
+        }
     }
 
     public boolean useTree(){
-        return map != null;
+        return tree != null;
     }
 
     public boolean mappingEnabled(){
@@ -116,6 +205,12 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
         tree.intersect(x, y, width, height, out);
     }
 
+    public boolean intersect(float x, float y, float width, float height, Boolf<? super T> out){
+        //don't waste time for empty groups
+        if(isEmpty()) return false;
+        return tree.intersect(x, y, width, height, out);
+    }
+
     public Seq<T> intersect(float x, float y, float width, float height){
         intersectArray.clear();
         //don't waste time for empty groups
@@ -127,6 +222,10 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
     public QuadTree tree(){
         if(tree == null) throw new RuntimeException("This group does not support quadtrees! Enable quadtrees when creating it.");
         return tree;
+    }
+
+    public Seq<T> rawSeq(){
+        return array;
     }
 
     /** Resizes the internal quadtree, if it is enabled.*/
@@ -165,12 +264,25 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
         }
     }
 
+    public int addIndex(T type){
+        int index = array.size;
+        add(type);
+        return index;
+    }
+
     public void remove(T type){
         if(clearing) return;
         if(type == null) throw new RuntimeException("Cannot remove a null entity!");
         int idx = array.indexOf(type, true);
         if(idx != -1){
             array.remove(idx);
+
+            //fix incorrect HEAD index since it was swapped
+            if(array.size > 0 && idx != array.size){
+                var swapped = array.items[idx];
+                if(indexer != null) indexer.change(swapped, idx);
+            }
+
             if(map != null){
                 map.remove(type.id());
             }
@@ -182,12 +294,46 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
         }
     }
 
+    public void removeIndex(T type, int position){
+        if(clearing) return;
+        if(type == null) throw new RuntimeException("Cannot remove a null entity!");
+        if(position != -1 && position < array.size){
+
+            //rarely the entity index is wrong; fallback to slow implementation
+            if(array.items[position] != type){
+                remove(type);
+                return;
+            }
+
+            //swap head with current
+            if(array.size > 1){
+                var head = array.items[array.size - 1];
+                if(indexer != null) indexer.change(head, position);
+                array.items[position] = head;
+            }
+
+            array.size --;
+            array.items[array.size] = null;
+
+            if(map != null){
+                map.remove(type.id());
+            }
+
+            //fix iteration index when removing
+            if(index >= position){
+                index --;
+            }
+        }
+    }
+
     public void clear(){
         clearing = true;
 
         array.each(Entityc::remove);
         array.clear();
         if(map != null) map.clear();
+        Pools.freeAll(timeRuns, true);
+        timeRuns.clear();
 
         clearing = false;
     }
@@ -205,5 +351,10 @@ public class EntityGroup<T extends Entityc> implements Iterable<T>{
     @Override
     public Iterator<T> iterator(){
         return array.iterator();
+    }
+
+    @Override
+    public String toString(){
+        return array.toString();
     }
 }

@@ -2,39 +2,47 @@ package mindustry.core;
 
 import arc.*;
 import arc.files.*;
-import arc.func.*;
 import arc.math.*;
 import arc.struct.*;
-import arc.util.*;
 import arc.util.serialization.*;
 import mindustry.mod.*;
 import mindustry.net.*;
 import mindustry.net.Net.*;
 import mindustry.type.*;
-import mindustry.ui.dialogs.*;
+import mindustry.ui.FileChooser.*;
 import rhino.*;
 
 import java.net.*;
-
-import static mindustry.Vars.*;
 
 public interface Platform{
 
     /** Dynamically creates a class loader for a jar file. This loader must be child-first. */
     default ClassLoader loadJar(Fi jar, ClassLoader parent) throws Exception{
         return new URLClassLoader(new URL[]{jar.file().toURI().toURL()}, parent){
+            static{
+                registerAsParallelCapable();
+            }
+
             @Override
             protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException{
                 //check for loaded state
-                Class<?> loadedClass = findLoadedClass(name);
-                if(loadedClass == null){
-                    try{
-                        //try to load own class first
-                        loadedClass = findClass(name);
-                    }catch(ClassNotFoundException e){
-                        //use parent if not found
-                        return parent.loadClass(name);
+                Class<?> loadedClass;
+                //lock per class name
+                synchronized(getClassLoadingLock(name)){
+                    //check for loaded state
+                    loadedClass = findLoadedClass(name);
+                    if(loadedClass == null){
+                        try{
+                            //try to load own class first
+                            loadedClass = findClass(name);
+                        }catch(ClassNotFoundException ignored){
+                        }
                     }
+                }
+
+                //use parent if not found
+                if(loadedClass == null){
+                    return parent.loadClass(name);
                 }
 
                 if(resolve){
@@ -79,9 +87,10 @@ public interface Platform{
     }
 
     default Context getScriptContext(){
-        Context c = Context.enter();
-        c.setOptimizationLevel(9);
-        return c;
+        Context context = Context.getCurrentContext();
+        if(context == null) context = Context.enter();
+        context.setOptimizationLevel(9);
+        return context;
     }
 
     /** Update discord RPC. */
@@ -101,68 +110,13 @@ public interface Platform{
         return uuid;
     }
 
-    /** Only used for iOS or android: open the share menu for a map or save. */
+    /** Only used for iOS: open the share menu for a map or save. */
     default void shareFile(Fi file){
     }
 
-    default void export(String name, String extension, FileWriter writer){
-        if(!ios){
-            platform.showFileChooser(false, extension, file -> {
-                ui.loadAnd(() -> {
-                    try{
-                        writer.write(file);
-                    }catch(Throwable e){
-                        ui.showException(e);
-                        Log.err(e);
-                    }
-                });
-            });
-        }else{
-            ui.loadAnd(() -> {
-                try{
-                    Fi result = Core.files.local(name+ "." + extension);
-                    writer.write(result);
-                    platform.shareFile(result);
-                }catch(Throwable e){
-                    ui.showException(e);
-                    Log.err(e);
-                }
-            });
-        }
-    }
-
-    /**
-     * Show a file chooser.
-     * @param cons Selection listener
-     * @param open Whether to open or save files
-     * @param extension File extension to filter
-     * @param title The title of the native dialog
-     */
-    default void showFileChooser(boolean open, String title, String extension, Cons<Fi> cons){
-        new FileChooser(title, file -> file.extEquals(extension), open, file -> {
-            if(!open){
-                cons.get(file.parent().child(file.nameWithoutExtension() + "." + extension));
-            }else{
-                cons.get(file);
-            }
-        }).show();
-    }
-
-    default void showFileChooser(boolean open, String extension, Cons<Fi> cons){
-        showFileChooser(open, open ? "@open": "@save", extension, cons);
-    }
-
-    /**
-     * Show a file chooser for multiple file types.
-     * @param cons Selection listener
-     * @param extensions File extensions to filter
-     */
-    default void showMultiFileChooser(Cons<Fi> cons, String... extensions){
-        if(mobile){
-            showFileChooser(true, extensions[0], cons);
-        }else{
-            new FileChooser("@open", file -> Structs.contains(extensions, file.extension().toLowerCase()), true, cons).show();
-        }
+    /** Do not call directly; use the builder pattern in {@link mindustry.ui.FileChooser}. */
+    default void showFileChooser(FileChooserParams params){
+        throw new IllegalArgumentException("Not implemented on this platform!");
     }
 
     /** Hide the app. Android only. */

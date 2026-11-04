@@ -1,6 +1,5 @@
 package mindustry.entities.comp;
 
-import arc.func.*;
 import arc.util.io.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.entities.*;
@@ -36,10 +35,6 @@ abstract class EntityComp{
         return ((Object)this) instanceof Unitc u && u.isPlayer() && !isLocal();
     }
 
-    boolean isNull(){
-        return false;
-    }
-
     /** Replaced with `this` after code generation. */
     <T extends Entityc> T self(){
         return (T)this;
@@ -64,7 +59,16 @@ abstract class EntityComp{
 
     }
 
+    void beforeWrite(){
+
+    }
+
     void afterRead(){
+
+    }
+
+    //called after all entities have been read (useful for ID resolution)
+    void afterReadAll(){
 
     }
 }

@@ -29,12 +29,13 @@ public class DirectConsumerTests extends PowerTestFixture{
         testUnitFactory(30, 30, 0.08f, 0.08f, 1.0f);
     }
 
+    static int fakes = 0;
     void testUnitFactory(int siliconAmount, int leadAmount, float producedPower, float requestedPower, float expectedSatisfaction){
-        Tile ct = createFakeTile(0, 0, new GenericCrafter("fakefactory"){{
+        Tile ct = createFakeTile(0, 0, new GenericCrafter("fakefactory" + (fakes ++)){{
             hasPower = true;
             hasItems = true;
-            consumes.power(requestedPower);
-            consumes.items(new ItemStack(Items.silicon, 30), new ItemStack(Items.lead, 30));
+            consumePower(requestedPower);
+            consumeItems(new ItemStack(Items.silicon, 30), new ItemStack(Items.lead, 30));
         }});
         ct.block().init();
         ct.build.items.add(Items.silicon, siliconAmount);

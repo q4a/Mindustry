@@ -1,6 +1,7 @@
 package mindustry.ui.dialogs;
 
 import arc.*;
+import arc.graphics.*;
 import arc.scene.ui.*;
 import arc.util.*;
 import mindustry.core.GameState.*;
@@ -11,28 +12,27 @@ import mindustry.graphics.*;
 import static mindustry.Vars.*;
 
 public class BaseDialog extends Dialog{
-    private boolean wasPaused;
+    protected boolean wasPaused;
+    /** If true, this dialog will pause the game while open. */
     protected boolean shouldPause;
+    protected Image titleImage;
 
     public BaseDialog(String title, DialogStyle style){
         super(title, style);
         setFillParent(true);
         this.title.setAlignment(Align.center);
         titleTable.row();
-        titleTable.image(Tex.whiteui, Pal.accent)
-        .growX().height(3f).pad(4f);
+        titleImage = titleTable.image(Tex.whiteui, Pal.accent).growX().height(3f).pad(4f).get();
 
         hidden(() -> {
-            if(shouldPause && state.isGame()){
-                if(!wasPaused || net.active()){
-                    state.set(State.playing);
-                }
+            if(shouldPause && state.isGame() && !net.active() && !wasPaused){
+                state.set(State.playing);
             }
-            Sounds.back.play();
+            Sounds.uiBack.play();
         });
 
         shown(() -> {
-            if(shouldPause && state.isGame()){
+            if(shouldPause && state.isGame() && !net.active()){
                 wasPaused = state.is(State.paused);
                 state.set(State.paused);
             }
@@ -43,9 +43,23 @@ public class BaseDialog extends Dialog{
         this(title, Core.scene.getStyle(DialogStyle.class));
     }
 
+    public void setTitleColor(Color color){
+        titleImage.setColor(color);
+        title.setColor(color);
+    }
+
+    /** Places the buttons as an overlay on top of the content. Used when the content can be scrolled through.*/
+    protected void makeButtonOverlay(){
+        clearChildren();
+        add(titleTable).growX().row();
+        stack(cont, buttons).grow();
+        buttons.bottom();
+    }
+
     protected void onResize(Runnable run){
         Events.on(ResizeEvent.class, event -> {
-            if(isShown() && Core.scene.getDialog() == this){
+            //ignore resize events while the Android text input dialog is shown - this does lead to buggy layout when rotated, but it's better than clearing the text. I don't know of a better solution to the problem
+            if(isShown() && Core.scene.getDialog() == this && !Core.input.isShowingTextInput()){
                 run.run();
                 updateScrollFocus();
             }
@@ -56,11 +70,15 @@ public class BaseDialog extends Dialog{
        closeOnBack();
     }
 
-    @Override
-    public void addCloseButton(){
-        buttons.defaults().size(210f, 64f);
-        buttons.button("@back", Icon.left, this::hide).size(210f, 64f);
+    public void addCloseButton(float width){
+        buttons.defaults().size(width, 64f);
+        buttons.button("@back", Icon.left, this::hide).size(width, 64f);
 
         addCloseListener();
+    }
+
+    @Override
+    public void addCloseButton(){
+        addCloseButton(210f);
     }
 }

@@ -18,7 +18,7 @@ import mindustry.world.meta.*;
 import static mindustry.Vars.*;
 
 @EntityDef(value = {Firec.class}, pooled = true)
-@Component(base = true)
+@Component(base = true, genInterface = false)
 abstract class FireComp implements Timedc, Posc, Syncc, Drawc{
     public static final int frames = 40, duration = 90;
 
@@ -28,25 +28,22 @@ abstract class FireComp implements Timedc, Posc, Syncc, Drawc{
     public static final TextureRegion[] regions = new TextureRegion[frames];
 
     @Import float time, lifetime, x, y;
-    @Import int id;
 
     Tile tile;
-    private transient Block block;
     private transient float
-        baseFlammability = -1, puddleFlammability, damageTimer = Mathf.random(40f),
+        puddleFlammability, damageTimer = Mathf.random(40f),
         spreadTimer = Mathf.random(spreadDelay), fireballTimer = Mathf.random(fireballDelay),
         warmup = 0f,
         animation = Mathf.random(frames - 1);
 
     @Override
     public void update(){
-
         animation += Time.delta / ticksPerFrame;
         warmup += Time.delta;
         animation %= frames;
 
         if(!headless){
-            control.sound.loop(Sounds.fire, this, 0.07f);
+            control.sound.loop(Sounds.loopFire, this, 0.07f);
         }
 
         //faster updates -> disappears more quickly
@@ -65,12 +62,7 @@ abstract class FireComp implements Timedc, Posc, Syncc, Drawc{
         Building entity = tile.build;
         boolean damage = entity != null;
 
-        if(baseFlammability < 0 || block != tile.block()){
-            baseFlammability = tile.getFlammability();
-            block = tile.block();
-        }
-
-        float flammability = baseFlammability + puddleFlammability;
+        float flammability = tile.getFlammability() + puddleFlammability;
 
         if(!damage && flammability <= 0){
             time += Time.delta * 8;
@@ -95,7 +87,7 @@ abstract class FireComp implements Timedc, Posc, Syncc, Drawc{
         //apply damage to nearby units & building
         if((damageTimer += Time.delta) >= damageDelay){
             damageTimer = 0f;
-            Puddlec p = Puddles.get(tile);
+            Puddle p = Puddles.get(tile);
             puddleFlammability = p != null ? p.getFlammability() / 3f : 0;
 
             if(damage){
@@ -115,7 +107,7 @@ abstract class FireComp implements Timedc, Posc, Syncc, Drawc{
             }
         }
 
-        Draw.alpha(Mathf.clamp(warmup / warmupDuration));
+        Draw.color(1f, 1f, 1f, Mathf.clamp(warmup / warmupDuration));
         Draw.z(Layer.effect);
         Draw.rect(regions[Math.min((int)animation, regions.length - 1)], x + Mathf.randomSeedRange((int)y, 2), y + Mathf.randomSeedRange((int)x, 2));
         Draw.reset();

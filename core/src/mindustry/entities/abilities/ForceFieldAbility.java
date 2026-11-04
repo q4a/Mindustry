@@ -1,6 +1,7 @@
 package mindustry.entities.abilities;
 
 import arc.*;
+import arc.audio.*;
 import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
@@ -8,10 +9,13 @@ import arc.math.*;
 import arc.math.geom.*;
 import arc.scene.ui.layout.*;
 import arc.util.*;
+import mindustry.*;
 import mindustry.content.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.ui.*;
+
+import static mindustry.Vars.*;
 
 public class ForceFieldAbility extends Ability{
     /** Shield radius. */
@@ -22,26 +26,28 @@ public class ForceFieldAbility extends Ability{
     public float max = 200f;
     /** Cooldown after the shield is broken, in ticks. */
     public float cooldown = 60f * 5;
+    /** Sides of shield polygon. */
+    public int sides = 6;
+    /** Rotation of shield. */
+    public float rotation = 0f;
+
+    public Sound breakSound = Sounds.shieldBreakSmall;
+    public Sound hitSound = Sounds.shieldHit;
+    public float hitSoundVolume = 0.12f;
 
     /** State. */
     protected float radiusScale, alpha;
+    protected boolean wasBroken = true;
 
     private static float realRad;
     private static Unit paramUnit;
     private static ForceFieldAbility paramField;
-    private static final Cons<Bullet> shieldConsumer = trait -> {
-        if(trait.team != paramUnit.team && trait.type.absorbable && Intersector.isInsideHexagon(paramUnit.x, paramUnit.y, realRad * 2f, trait.x(), trait.y()) && paramUnit.shield > 0){
-            trait.absorb();
-            Fx.absorb.at(trait);
-
-            //break shield
-            if(paramUnit.shield <= trait.damage()){
-                paramUnit.shield -= paramField.cooldown * paramField.regen;
-
-                Fx.shieldBreak.at(paramUnit.x, paramUnit.y, paramField.radius, paramUnit.team.color);
-            }
-
-            paramUnit.shield -= trait.damage();
+    private static final Cons<Bullet> shieldConsumer = b -> {
+        if(b.team != paramUnit.team && b.type.absorbable && Intersector.isInRegularPolygon(paramField.sides, paramUnit.x, paramUnit.y, realRad, paramField.rotation, b.x(), b.y()) && paramUnit.shield > 0){
+            b.absorb();
+            Fx.absorb.at(b);
+            paramField.hitSound.at(b.x, b.y, 1f + Mathf.range(0.1f), paramField.hitSoundVolume);
+            paramUnit.shield -= b.type().shieldDamage(b);
             paramField.alpha = 1f;
         }
     };
@@ -53,13 +59,47 @@ public class ForceFieldAbility extends Ability{
         this.cooldown = cooldown;
     }
 
+    public ForceFieldAbility(float radius, float regen, float max, float cooldown, int sides, float rotation){
+        this.radius = radius;
+        this.regen = regen;
+        this.max = max;
+        this.cooldown = cooldown;
+        this.sides = sides;
+        this.rotation = rotation;
+    }
+
     ForceFieldAbility(){}
+
+    public float scaledMax(Unit unit){
+        return max * Vars.state.rules.unitHealth(unit.team);
+    }
+
+    @Override
+    public void addStats(Table t){
+        super.addStats(t);
+        t.add(Core.bundle.format("bullet.range", Strings.autoFixed(radius / tilesize, 2)));
+        t.row();
+        t.add(abilityStat("shield", Strings.autoFixed(max, 2)));
+        t.row();
+        t.add(abilityStat("repairspeed", Strings.autoFixed(regen * 60f, 2)));
+        t.row();
+        t.add(abilityStat("cooldown", Strings.autoFixed(cooldown / 60f, 2)));
+    }
 
     @Override
     public void update(Unit unit){
-        if(unit.shield < max){
+        if(unit.shield <= 0f && !wasBroken){
+            unit.shield -= cooldown * regen;
+
+            Fx.shieldBreak.at(unit.x, unit.y, radius, unit.type.shieldColor(unit), this);
+            breakSound.at(unit.x, unit.y);
+        }
+
+        if(unit.shield < scaledMax(unit)){
             unit.shield += Time.delta * regen;
         }
+
+        wasBroken = unit.shield <= 0f;
 
         alpha = Math.max(alpha - Time.delta/10f, 0f);
 
@@ -76,29 +116,44 @@ public class ForceFieldAbility extends Ability{
     }
 
     @Override
+    public void death(Unit unit){
+
+        //self-destructing units can have a shield on death
+        if(unit.shield > 0f && !wasBroken){
+            Fx.shieldBreak.at(unit.x, unit.y, radius, unit.type.shieldColor(unit), sides);
+            breakSound.at(unit.x, unit.y);
+        }
+    }
+
+    @Override
     public void draw(Unit unit){
         checkRadius(unit);
 
         if(unit.shield > 0){
-            Draw.z(Layer.shields);
+            Draw.color(unit.type.shieldColor(unit), Color.white, Mathf.clamp(alpha));
 
-            Draw.color(unit.team.color, Color.white, Mathf.clamp(alpha));
-
-            if(Core.settings.getBool("animatedshields")){
-                Fill.poly(unit.x, unit.y, 6, realRad);
+            if(Vars.renderer.animateShields){
+                Draw.z(Layer.shields + 0.001f * alpha);
+                Fill.poly(unit.x, unit.y, sides, realRad, rotation);
             }else{
+                Draw.z(Layer.shields);
                 Lines.stroke(1.5f);
                 Draw.alpha(0.09f);
-                Fill.poly(unit.x, unit.y, 6, radius);
+                Fill.poly(unit.x, unit.y, sides, radius, rotation);
                 Draw.alpha(1f);
-                Lines.poly(unit.x, unit.y, 6, radius);
+                Lines.poly(unit.x, unit.y, sides, radius, rotation);
             }
         }
     }
 
     @Override
     public void displayBars(Unit unit, Table bars){
-        bars.add(new Bar("stat.shieldhealth", Pal.accent, () -> unit.shield / max)).row();
+        bars.add(new Bar("stat.shieldhealth", Pal.accent, () -> unit.shield / scaledMax(unit))).row();
+    }
+
+    @Override
+    public void created(Unit unit){
+        unit.shield = scaledMax(unit);
     }
 
     public void checkRadius(Unit unit){

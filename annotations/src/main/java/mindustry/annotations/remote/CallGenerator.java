@@ -56,11 +56,26 @@ public class CallGenerator{
                 packet.addMethod(writeHandleMethod(ent, true));
             }
 
+            if(!(ent.where.isClient && ent.where.isServer)){
+                packet.addMethod( MethodSpec.methodBuilder("allow")
+                .addModifiers(Modifier.PUBLIC)
+                .addParameter(boolean.class, "server")
+                .addAnnotation(Override.class)
+                .returns(boolean.class)
+                .addCode("return " + (ent.where.isClient ? "server" : "!server") + ";").build());
+            }
+
             //register packet
             register.addStatement("mindustry.net.Net.registerPacket($L.$L::new)", packageName, ent.packetClassName);
 
             //add fields to the type
-            for(Svar param : ent.element.params()){
+            Seq<Svar> params = ent.element.params();
+            for(int i = 0; i < params.size; i++){
+                if(!ent.where.isServer && i == 0){
+                    continue;
+                }
+
+                Svar param = params.get(i);
                 packet.addField(param.tname(), param.name(), Modifier.PUBLIC);
             }
 
@@ -120,7 +135,7 @@ public class CallGenerator{
                 builder.addStatement("WRITE.$L($L)", typeName.equals("boolean") ? "bool" : typeName.charAt(0) + "", varName);
             }else{
                 //else, try and find a serializer
-                String ser = serializer.writers.get(typeName.replace("mindustry.gen.", ""), SerializerResolver.locate(ent.element.e, var.mirror(), true));
+                String ser = serializer.getNetWriter(typeName.replace("mindustry.gen.", ""), SerializerResolver.locate(ent.element.e, var.mirror(), true));
 
                 if(ser == null){ //make sure a serializer exists!
                     BaseProcessor.err("No method to write class type: '" + typeName + "'", var);
@@ -187,7 +202,7 @@ public class CallGenerator{
                 builder.addStatement("$L = READ.$L()", varName, pname);
             }else{
                 //else, try and find a serializer
-                String ser = serializer.readers.get(typeName.replace("mindustry.gen.", ""), SerializerResolver.locate(ent.element.e, var.mirror(), false));
+                String ser = serializer.getNetReader(typeName.replace("mindustry.gen.", ""), SerializerResolver.locate(ent.element.e, var.mirror(), false));
 
                 if(ser == null){ //make sure a serializer exists!
                     BaseProcessor.err("No read method to read class type '" + typeName + "' in method " + ent.targetMethod + "; " + serializer.readers, var);

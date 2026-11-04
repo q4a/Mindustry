@@ -2,13 +2,12 @@ package mindustry.content;
 
 import arc.graphics.*;
 import arc.util.*;
-import mindustry.ctype.*;
 import mindustry.gen.*;
 import mindustry.type.*;
 import mindustry.type.weather.*;
 import mindustry.world.meta.*;
 
-public class Weathers implements ContentList{
+public class Weathers{
     public static Weather
     rain,
     snow,
@@ -17,16 +16,15 @@ public class Weathers implements ContentList{
     fog,
     suspendParticles;
 
-    @Override
-    public void load(){
-        snow = new ParticleWeather("snow"){{
+    public static void load(){
+        snow = new ParticleWeather("snowing"){{
             particleRegion = "particle";
             sizeMax = 13f;
             sizeMin = 2.6f;
             density = 1200f;
             attrs.set(Attribute.light, -0.15f);
 
-            sound = Sounds.windhowl;
+            sound = Sounds.windHowl;
             soundVol = 0f;
             soundVolOscMag = 1.5f;
             soundVolOscScl = 1100f;

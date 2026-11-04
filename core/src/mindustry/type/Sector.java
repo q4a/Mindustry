@@ -9,8 +9,10 @@ import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.content.*;
 import mindustry.game.Saves.*;
 import mindustry.game.*;
+import mindustry.gen.*;
 import mindustry.graphics.g3d.PlanetGrid.*;
 import mindustry.ui.*;
 import mindustry.world.modules.*;
@@ -19,6 +21,7 @@ import static mindustry.Vars.*;
 
 /** A small section of a planet. */
 public class Sector{
+    static final String[] threats = {"low", "medium", "high", "extreme", "eradication"};
     private static final Seq<Sector> tmpSeq1 = new Seq<>();
 
     public final SectorRect rect;
@@ -29,6 +32,7 @@ public class Sector{
 
     public @Nullable SaveSlot save;
     public @Nullable SectorPreset preset;
+    public @Nullable Sector shieldTarget;
     public SectorInfo info = new SectorInfo();
 
     /** Number 0-1 indicating the difficulty based on nearby bases. */
@@ -39,7 +43,12 @@ public class Sector{
         this.planet = planet;
         this.tile = tile;
         this.plane = new Plane();
-        this.rect = makeRect();
+        //empty sector tile needs a special rect
+        if(tile.corners.length == 0){
+            rect = new SectorRect(1f, Vec3.Zero.cpy(), Vec3.Y.cpy(), Vec3.X.cpy(), 0f);
+        }else{
+            this.rect = makeRect();
+        }
         this.id = tile.id;
     }
 
@@ -58,13 +67,21 @@ public class Sector{
         }
     }
 
+    public boolean isNear(Sector other){
+        for(var tile : tile.tiles){
+            if(planet.getSector(tile) == other){
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Displays threat as a formatted string. */
     public String displayThreat(){
         float step = 0.25f;
         String color = Tmp.c1.set(Color.white).lerp(Color.scarlet, Mathf.round(threat, step)).toString();
-        String[] threats = {"low", "medium", "high", "extreme", "eradication"};
-        int index = Math.min((int)(threat / step), threats.length - 1);
-        return "[#" + color + "]" + Core.bundle.get("threat." + threats[index]);
+        //TODO: rework this in the future
+        return "[#" + color + "]" + Core.bundle.get("threat." + (preset != null && Mathf.equal(preset.difficulty, SectorDifficulty.unreasonable) ? "unreasonable" : threats[Math.min((int)(threat / step), threats.length - 1)]));
     }
 
     /** @return whether this sector can be landed on at all.
@@ -73,12 +90,30 @@ public class Sector{
         return hasBase() || (preset != null && preset.alwaysUnlocked);
     }
 
+    public boolean allowLaunchSchematics(){
+        return (preset != null && preset.overrideLaunchDefaults) ? preset.allowLaunchSchematics : planet.allowLaunchSchematics;
+    }
+
+    public boolean allowLaunchLoadout(){
+        return (preset != null && preset.overrideLaunchDefaults) ? preset.allowLaunchLoadout : planet.allowLaunchLoadout;
+    }
+
     public void saveInfo(){
         Core.settings.putJson(planet.name + "-s-" + id + "-info", info);
     }
 
     public void loadInfo(){
         info = Core.settings.getJson(planet.name + "-s-" + id + "-info", SectorInfo.class, SectorInfo::new);
+
+        //fix an old naming bug; this doesn't happen with new saves, but old saves need manual fixes
+        if(info.resources.contains(Blocks.water)){
+            info.resources.remove(Blocks.water);
+            info.resources.add(Liquids.water);
+        }
+
+        if(info.resources.contains(u -> u == null)){
+            info.resources = info.resources.select(u -> u != null);
+        }
     }
 
     /** Removes any sector info. */
@@ -87,23 +122,27 @@ public class Sector{
         Core.settings.remove(planet.name + "-s-" + id + "-info");
     }
 
-    public float getProductionScale(){
-        return Math.max(1f - info.damage, 0);
+    public boolean isShielded(){
+        return preset != null && preset.shieldSectors.size > 0 && !isCaptured() && preset.shieldSectors.contains(s -> !s.isCaptured());
     }
 
     public boolean isAttacked(){
-        if(isBeingPlayed()) return state.rules.waves;
-        return save != null && info.waves && info.hasCore;
+        if(isBeingPlayed()) return state.rules.waves || state.rules.attackMode;
+        return save != null && (info.waves || info.attack) && info.hasCore;
     }
 
-    /** @return whether the player has a base here. */
+    /** @return whether the player has a base (active save with a core) here. */
     public boolean hasBase(){
         return save != null && info.hasCore && !(Vars.state.isGame() && Vars.state.rules.sector == this && state.gameOver);
     }
 
+    public boolean isFrozen(){
+        return isAttacked() && !isBeingPlayed();
+    }
+
     /** @return whether the enemy has a generated base here. */
     public boolean hasEnemyBase(){
-        return ((generateEnemyBase && preset == null) || (preset != null && preset.captureWave == 0)) && (save == null || info.attack);
+        return ((generateEnemyBase && preset == null) || (preset != null && preset.captureWave == 0)) && (save == null || info.attack || !hasBase());
     }
 
     public boolean isBeingPlayed(){
@@ -112,7 +151,13 @@ public class Sector{
     }
 
     public String name(){
-        if(preset != null && info.name == null) return preset.localizedName;
+        if(preset != null && info.name == null && (preset.requireUnlock || preset.showHidden)){
+            return preset.localizedName;
+        }
+        //single-sector "planets" use their own name for the sector name.
+        if(info.name == null && planet.sectors.size == 1){
+            return planet.localizedName;
+        }
         return info.name == null ? id + "" : info.name;
     }
 
@@ -123,11 +168,19 @@ public class Sector{
 
     @Nullable
     public TextureRegion icon(){
-        return info.contentIcon != null ? info.contentIcon.uiIcon : info.icon == null ? null : Fonts.getLargeIcon(info.icon);
+        return info.contentIcon != null ? info.contentIcon.uiIcon : info.icon == null ? (preset != null && preset.requireUnlock && preset.unlocked() && preset.uiIcon.found() ? preset.uiIcon : null) : Fonts.getLargeIcon(info.icon);
+    }
+
+    @Nullable
+    public String iconChar(){
+        if(info.contentIcon != null) return info.contentIcon.emoji();
+        if(info.icon != null) return (char)Iconc.codes.get(info.icon) + "";
+        return null;
     }
 
     public boolean isCaptured(){
-        return save != null && !info.waves;
+        if(isBeingPlayed()) return !state.rules.waves && !state.rules.attackMode;
+        return save != null && !info.waves && !info.attack;
     }
 
     public boolean hasSave(){
@@ -148,9 +201,7 @@ public class Sector{
 
     /** @return the sector size, in tiles */
     public int getSize(){
-        if(planet.generator == null) return 1;
-        int res = (int)(rect.radius * planet.generator.getSizeScl());
-        return res % 2 == 0 ? res : res + 1;
+        return planet.generator == null ? 1 : planet.generator.getSectorSize(this);
     }
 
     public void removeItems(ItemSeq items){
@@ -201,7 +252,7 @@ public class Sector{
 
     /** Projects this sector onto a 4-corner square for use in map gen.
      * Allocates a new object. Do not call in the main loop. */
-    private SectorRect makeRect(){
+    protected SectorRect makeRect(){
         Vec3[] corners = new Vec3[tile.corners.length];
         for(int i = 0; i < corners.length; i++){
             corners[i] = tile.corners[i].v.cpy().setLength(planet.radius);

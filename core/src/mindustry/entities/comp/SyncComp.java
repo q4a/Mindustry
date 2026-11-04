@@ -3,6 +3,7 @@ package mindustry.entities.comp;
 import arc.util.io.*;
 import mindustry.*;
 import mindustry.annotations.Annotations.*;
+import mindustry.game.*;
 import mindustry.gen.*;
 
 import java.nio.*;
@@ -20,6 +21,14 @@ abstract class SyncComp implements Entityc{
     void writeSyncManual(FloatBuffer buffer){}
     void afterSync(){}
     void interpolate(){}
+
+    boolean isSyncHidden(Team team){
+        return false;
+    }
+
+    void handleSyncHidden(){
+
+    }
 
     @Override
     public void update(){
